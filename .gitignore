@@ -1,0 +1,11 @@
+node_modules/
+npm-debug.log*
+yarn-*.log*
+__pycache__/
+*.py[cod]
+.venv/
+.env
+cdk.out/
+cdk.context.json
+.DS_Store
+dist/

@@ -1,0 +1,5 @@
+{
+  "query": "Find a 4-star hotel in Paris Le Marais with a gym, prefer indoor pool, under 500 GBP/night, 2 adults, 2025-10-31–2025-11-03.",
+  "stay": { "city": "Paris", "neighborhood": "Le Marais", "check_in": "2025-10-31", "check_out": "2025-11-03", "adults": 2, "max_price_gbp": 500, "wants_indoor_pool": true },
+  "use_responder": true
+}

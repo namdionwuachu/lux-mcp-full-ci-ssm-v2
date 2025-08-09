@@ -1,0 +1,61 @@
+name: Deploy Lux Search (us-east-1) with SSM
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 18 }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - run: npm i -g aws-cdk@2
+      - name: CDK deps
+        working-directory: cdk
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: CDK Bootstrap
+        working-directory: cdk
+        run: cdk bootstrap
+      - name: Deploy Backend (LuxStack)
+        working-directory: cdk
+        run: cdk deploy LuxStack --require-approval never
+      - name: Deploy Frontend Infra (LuxFrontendStack)
+        working-directory: cdk
+        run: cdk deploy LuxFrontendStack --require-approval never
+      - name: Get CloudFormation Outputs
+        id: outputs
+        run: |
+          API_URL=$(aws cloudformation describe-stacks --stack-name LuxStack --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text)
+          BUCKET=$(aws cloudformation describe-stacks --stack-name LuxFrontendStack --query "Stacks[0].Outputs[?OutputKey=='FrontendBucketName'].OutputValue" --output text)
+          DIST_ID=$(aws cloudformation describe-stacks --stack-name LuxFrontendStack --query "Stacks[0].Outputs[?OutputKey=='FrontendDistributionId'].OutputValue" --output text)
+          echo "api_url=$API_URL" >> $GITHUB_OUTPUT
+          echo "bucket=$BUCKET" >> $GITHUB_OUTPUT
+          echo "dist_id=$DIST_ID" >> $GITHUB_OUTPUT
+      - name: Build Frontend with injected API URL
+        working-directory: frontend
+        run: |
+          echo "VITE_LUX_API=${{ steps.outputs.outputs.api_url }}" > .env
+          npm ci
+          npm run build
+      - name: Upload SPA to S3
+        run: aws s3 sync frontend/dist s3://${{ steps.outputs.outputs.bucket }} --delete
+      - name: Invalidate CloudFront
+        run: aws cloudfront create-invalidation --distribution-id ${{ steps.outputs.outputs.dist_id }} --paths "/*"
