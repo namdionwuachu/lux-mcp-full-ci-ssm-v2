@@ -15,7 +15,6 @@ class LuxStack(Stack):
                 "secretsmanager:GetSecretValue","ssm:GetParameter"
             ], resources=["*"])
         env = {
-            "AWS_REGION": self.region,
             "AMADEUS_BASE_URL": os.getenv("AMADEUS_BASE_URL","https://test.api.amadeus.com"),
             "AMADEUS_SECRET_NAME": os.getenv("AMADEUS_SECRET_NAME","/lux/amadeus/credentials"),
             # Scraping scaffold (OFF by default)
