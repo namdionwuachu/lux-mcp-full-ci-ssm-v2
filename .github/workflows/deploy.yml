@@ -5,57 +5,111 @@ on:
     branches: [ main ]
 
 permissions:
-  id-token: write
   contents: read
 
 env:
   AWS_REGION: us-east-1
+  LUX_API_PARAM_NAME: /lux/frontend/VITE_LUX_API   # SSM param to store API URL
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
-        with: { node-version: 18 }
+        with:
+          node-version: 18
+
       - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          python-version: '3.12'
+
+      # Using long-lived keys from repo secrets
+      - name: Configure AWS credentials (secrets)
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+
       - run: npm i -g aws-cdk@2
+
       - name: CDK deps
         working-directory: cdk
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
       - name: CDK Bootstrap
         working-directory: cdk
         run: cdk bootstrap
+
       - name: Deploy Backend (LuxStack)
         working-directory: cdk
         run: cdk deploy LuxStack --require-approval never
+
       - name: Deploy Frontend Infra (LuxFrontendStack)
         working-directory: cdk
         run: cdk deploy LuxFrontendStack --require-approval never
-      - name: Get CloudFormation Outputs
-        id: outputs
+
+      # Pull API URL from SSM (fallback to CFN output on first run) and persist to SSM
+      - name: Resolve API URL via SSM (fallback to CFN) and persist
+        id: resolve_api
+        shell: bash
         run: |
-          API_URL=$(aws cloudformation describe-stacks --stack-name LuxStack --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text)
-          BUCKET=$(aws cloudformation describe-stacks --stack-name LuxFrontendStack --query "Stacks[0].Outputs[?OutputKey=='FrontendBucketName'].OutputValue" --output text)
-          DIST_ID=$(aws cloudformation describe-stacks --stack-name LuxFrontendStack --query "Stacks[0].Outputs[?OutputKey=='FrontendDistributionId'].OutputValue" --output text)
-          echo "api_url=$API_URL" >> $GITHUB_OUTPUT
-          echo "bucket=$BUCKET" >> $GITHUB_OUTPUT
-          echo "dist_id=$DIST_ID" >> $GITHUB_OUTPUT
+          set -euo pipefail
+
+          API_URL_SSM="$(aws ssm get-parameter \
+            --name "${LUX_API_PARAM_NAME}" \
+            --with-decryption \
+            --query 'Parameter.Value' \
+            --output text 2>/dev/null || true)"
+
+          if [[ -n "${API_URL_SSM}" && "${API_URL_SSM}" != "None" ]]; then
+            API_URL="${API_URL_SSM}"
+            echo "Using API URL from SSM."
+          else
+            API_URL="$(aws cloudformation describe-stacks \
+              --stack-name LuxStack \
+              --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" \
+              --output text)"
+            echo "Using API URL from CloudFormation: ${API_URL}"
+
+            if aws ssm get-parameter --name "${LUX_API_PARAM_NAME}" >/dev/null 2>&1; then
+              aws ssm put-parameter --name "${LUX_API_PARAM_NAME}" --type String --value "${API_URL}" --overwrite
+            else
+              aws ssm put-parameter --name "${LUX_API_PARAM_NAME}" --type String --value "${API_URL}"
+            fi
+          fi
+
+          BUCKET="$(aws cloudformation describe-stacks \
+            --stack-name LuxFrontendStack \
+            --query "Stacks[0].Outputs[?OutputKey=='FrontendBucketName'].OutputValue" \
+            --output text)"
+
+          DIST_ID="$(aws cloudformation describe-stacks \
+            --stack-name LuxFrontendStack \
+            --query "Stacks[0].Outputs[?OutputKey=='FrontendDistributionId'].OutputValue" \
+            --output text)"
+
+          {
+            echo "api_url=${API_URL}"
+            echo "bucket=${BUCKET}"
+            echo "dist_id=${DIST_ID}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build Frontend with injected API URL
         working-directory: frontend
         run: |
-          echo "VITE_LUX_API=${{ steps.outputs.outputs.api_url }}" > .env
+          echo "VITE_LUX_API=${{ steps.resolve_api.outputs.api_url }}" > .env
           npm ci
           npm run build
+
       - name: Upload SPA to S3
-        run: aws s3 sync frontend/dist s3://${{ steps.outputs.outputs.bucket }} --delete
+        run: aws s3 sync frontend/dist "s3://${{ steps.resolve_api.outputs.bucket }}" --delete
+
       - name: Invalidate CloudFront
-        run: aws cloudfront create-invalidation --distribution-id ${{ steps.outputs.outputs.dist_id }} --paths "/*"
+        run: aws cloudfront create-invalidation --distribution-id "${{ steps.resolve_api.outputs.dist_id }}" --paths "/*"
+

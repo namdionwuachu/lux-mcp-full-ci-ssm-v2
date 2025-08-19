@@ -8,6 +8,6 @@ def run(task: Dict[str, Any]) -> Dict[str, Any]:
         except: return 3
     n=nights(ci,co)
     for h in hotels:
-        price=h.get("est_price_gbp"); h["passes_budget"]=(price is None) or (max_price is None) or (price/max(n,1) <= max_price)
+        price=h.get("est_price_gbp"); h["passes_budget"] = (price is None) or (max_price is None) or (price <= max_price)
         h["score"]=(2 if h.get("pool_bonus") else 0) + (1 if h["passes_budget"] else 0); h["nights"]=n
     ranked=sorted(hotels, key=lambda x:x["score"], reverse=True); return {"status":"ok","ranked":ranked[:5]}
