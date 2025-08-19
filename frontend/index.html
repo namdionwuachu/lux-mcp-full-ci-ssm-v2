@@ -5,54 +5,98 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Lux Search — Planner + Responder</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script>const API_URL="";</script>
 </head>
 <body class="bg-slate-950 text-slate-50">
   <main class="max-w-6xl mx-auto px-6 py-10">
     <h1 class="text-3xl font-bold">Meet Lux Search</h1>
     <p class="mt-1 text-slate-300">AI Planner + optional AI Responder (toggle).</p>
+
     <form id="f" class="mt-6 grid md:grid-cols-3 gap-3">
       <input id="city" class="rounded bg-slate-900 border border-slate-700 px-3 py-2" value="Paris" placeholder="City">
       <input id="hood" class="rounded bg-slate-900 border border-slate-700 px-3 py-2" value="Le Marais" placeholder="Neighborhood">
+
       <div class="grid grid-cols-2 gap-3 md:col-span-3">
-        <input id="in" type="date"  class="rounded bg-slate-900 border border-slate-700 px-3 py-2" value="2025-10-31">
-        <input id="out" type="date" class="rounded bg-slate-900 border border-slate-700 px-3 py-2" value="2025-11-03">
+        <!-- renamed to avoid reserved keyword 'in' -->
+        <input id="checkIn"  type="date" class="rounded bg-slate-900 border border-slate-700 px-3 py-2" value="2025-10-31">
+        <input id="checkOut" type="date" class="rounded bg-slate-900 border border-slate-700 px-3 py-2" value="2025-11-03">
       </div>
+
       <input id="ad"  type="number" min="1" class="rounded bg-slate-900 border border-slate-700 px-3 py-2" value="2"   placeholder="Adults">
       <input id="max" type="number" min="1" class="rounded bg-slate-900 border border-slate-700 px-3 py-2" value="500" placeholder="Max £/night">
+
       <label class="inline-flex items-center gap-2 text-sm text-slate-300 md:col-span-3">
         <input id="pool" type="checkbox" class="h-4 w-4" checked> Prefer indoor pool
       </label>
+
       <label class="inline-flex items-center gap-2 text-sm text-slate-300 md:col-span-3">
         <input id="useResponder" type="checkbox" class="h-4 w-4"> Use AI narrative (Responder)
       </label>
+
       <button class="rounded bg-cyan-400 text-slate-900 font-semibold px-4 py-2 md:col-span-3">Search</button>
     </form>
-    <div id="notice" class="mt-3 text-sm text-amber-300 hidden">Set <code>API_URL</code> at the top of this file.</div>
+
+    <div id="notice" class="mt-3 text-sm text-amber-300 hidden">
+      Set <code>VITE_LUX_API</code> via build env.
+    </div>
+
     <div id="narr" class="mt-6 text-slate-200 text-base whitespace-pre-wrap"></div>
     <div id="results" class="mt-6 grid md:grid-cols-2 gap-4"></div>
   </main>
-  <script>
-    const notice = document.getElementById('notice');
+
+  <!-- Use a module script so Vite can inline env vars -->
+  <script type="module">
+    // CI writes .env with VITE_LUX_API; Vite inlines it here at build time
+    const API_URL = import.meta.env.VITE_LUX_API || "";
+
+    const notice     = document.getElementById('notice');
+    const form       = document.getElementById('f');
+    const cityEl     = document.getElementById('city');
+    const hoodEl     = document.getElementById('hood');
+    const checkInEl  = document.getElementById('checkIn');
+    const checkOutEl = document.getElementById('checkOut');
+    const adultsEl   = document.getElementById('ad');
+    const maxEl      = document.getElementById('max');
+    const poolEl     = document.getElementById('pool');
+    const useRespEl  = document.getElementById('useResponder');
+    const r          = document.getElementById('results');
+    const narr       = document.getElementById('narr');
+
     if (!API_URL) notice.classList.remove('hidden');
-    const r = document.getElementById('results');
-    const narr = document.getElementById('narr');
-    document.getElementById('f').addEventListener('submit', async (e)=>{
+
+    form.addEventListener('submit', async (e) => {
       e.preventDefault();
       if (!API_URL) return;
+
       r.innerHTML = "<div class='text-slate-300'>Searching…</div>";
       narr.textContent = "";
+
       const payload = {
-        query: `Find a 4-star hotel in ${city.value} ${hood.value} with a gym, prefer indoor pool, under ${max.value} GBP/night, ${ad.value} adults, ${in.value}–${out.value}.`,
-        stay: { city: city.value, neighborhood: hood.value, check_in: in.value, check_out: out.value, adults: Number(ad.value), max_price_gbp: Number(max.value), wants_indoor_pool: pool.checked },
-        use_responder: document.getElementById('useResponder').checked
+        query: `Find a 4-star hotel in ${cityEl.value} ${hoodEl.value} with a gym, prefer indoor pool, under ${maxEl.value} GBP/night, ${adultsEl.value} adults, ${checkInEl.value}–${checkOutEl.value}.`,
+        stay: {
+          city: cityEl.value,
+          neighborhood: hoodEl.value,
+          check_in: checkInEl.value,
+          check_out: checkOutEl.value,
+          adults: Number(adultsEl.value),
+          max_price_gbp: Number(maxEl.value),
+          wants_indoor_pool: poolEl.checked
+        },
+        use_responder: useRespEl.checked
       };
+
       try {
-        const res = await fetch(API_URL, { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(payload) });
-        if (!res.ok) throw new Error('HTTP '+res.status);
+        const res = await fetch(API_URL, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+
         const data = await res.json();
         if (data.narrative) narr.textContent = data.narrative;
-        const top = data.top || [], all = data.candidates || [];
+
+        const top = data.top || [];
+        const all = data.candidates || [];
         const cards = (list) => list.map((h,i)=>`
           <div class="rounded border border-slate-800 bg-slate-900 p-4">
             <div class="text-xs text-slate-400">#${i+1}</div>
@@ -61,6 +105,7 @@
             <div class="mt-2 text-sm">${typeof h.est_price_gbp==='number' ? '£'+Math.round(h.est_price_gbp) : 'Price TBD'}</div>
             <div class="mt-2 text-xs text-slate-400">${(h.amenities||[]).slice(0,6).join(' · ')}</div>
           </div>`).join('');
+
         r.innerHTML = `
           ${top.length? `<h3 class="text-xl font-bold md:col-span-2">Top Picks</h3>${cards(top)}` : ''}
           ${all.length? `<h3 class="text-xl font-bold md:col-span-2 mt-6">All Candidates</h3>${cards(all)}` : ''}
@@ -73,3 +118,4 @@
   </script>
 </body>
 </html>
+
