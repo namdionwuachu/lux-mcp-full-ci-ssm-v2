@@ -3,6 +3,7 @@ name: Deploy Lux Search (us-east-1) with SSM
 on:
   push:
     branches: [ main ]
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -36,23 +37,38 @@ jobs:
 
       - run: npm i -g aws-cdk@2
 
+      - name: Show tool versions
+        run: |
+          node -v
+          npm -v
+          python -V
+          cdk --version
+
       - name: CDK deps
         working-directory: cdk
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+
+      - name: CDK Synth (debug)
+        working-directory: cdk
+        run: cdk synth --app "python app.py"
+
+
       - name: CDK Bootstrap
         working-directory: cdk
-        run: cdk bootstrap
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          cdk bootstrap aws://$ACCOUNT_ID/${{ env.AWS_REGION }} --app "python app.py"
 
       - name: Deploy Backend (LuxStack)
         working-directory: cdk
-        run: cdk deploy LuxStack --require-approval never
+        run: cdk deploy LuxStack --require-approval never --app "python app.py"
 
       - name: Deploy Frontend Infra (LuxFrontendStack)
         working-directory: cdk
-        run: cdk deploy LuxFrontendStack --require-approval never
+        run: cdk deploy LuxFrontendStack --require-approval never --app "python app.py"
 
       # Pull API URL from SSM (fallback to CFN output on first run) and persist to SSM
       - name: Resolve API URL via SSM (fallback to CFN) and persist
