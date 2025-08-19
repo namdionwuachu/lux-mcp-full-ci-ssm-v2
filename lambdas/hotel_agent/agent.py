@@ -1,10 +1,7 @@
-"""Hotel agent: provider search (city + neighborhood), 4★+gym filter, pool bonus, per-night normalization."""
 """Hotel agent: provider search (city/neighborhood/geo), 4★+gym filter, per-night price."""
 from typing import Dict, Any, List
 from datetime import date
 from shared.models import Stay
-
-# Use the generic tools (no hard-coding)
 from tools.web_search import search_hotels
 from tools.hotels_filter import filter_four_star_with_gym
 

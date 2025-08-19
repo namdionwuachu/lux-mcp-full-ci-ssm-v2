@@ -1,22 +1,48 @@
 """API entry: plan -> hotel_search -> budget_filter; optional responder narrative; CORS on."""
 import json
 import logging
+import os
 from typing import Any, Dict
+
+import boto3
+
 from lambdas.orchestrator.mcp import MCP
 from lambdas.orchestrator.agents import planner
 from lambdas.orchestrator.agents.responder import narrate
-from lambdas.hotel_agent.agent import run as hotel_run
-from lambdas.budget_agent.agent import run as budget_run
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 mcp = MCP()
-mcp.register("hotel_search", lambda t: hotel_run(t))
-mcp.register("budget_filter", lambda t: budget_run(t))
+
+# Invoke child agents via Lambda (names injected by CDK env vars)
+LAM = boto3.client("lambda")
+HOTEL_FN  = os.getenv("HOTEL_FN")
+BUDGET_FN = os.getenv("BUDGET_FN")
+
+def _invoke_lambda(fn_name: str, payload: dict) -> dict:
+    try:
+        resp = LAM.invoke(
+            FunctionName=fn_name,
+            InvocationType="RequestResponse",
+            Payload=json.dumps(payload).encode("utf-8"),
+        )
+        raw = resp["Payload"].read()
+        j = json.loads(raw or b"{}")
+        # Unwrap API-style responses from agents if present
+        if isinstance(j, dict) and "statusCode" in j and "body" in j:
+            return json.loads(j.get("body") or "{}")
+        return j if isinstance(j, dict) else {}
+    except Exception as e:
+        logger.exception("Invoke %s failed", fn_name)
+        return {"status": "error", "error": str(e)}
+
+# Register routes -> invoke lambdas
+mcp.register("hotel_search",  lambda t: _invoke_lambda(HOTEL_FN,  t))
+mcp.register("budget_filter", lambda t: _invoke_lambda(BUDGET_FN, t))
 
 CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",                # consider restricting to your CF domain
+    "Access-Control-Allow-Origin": "*",  # tighten to your CF domain later
     "Access-Control-Allow-Headers": "Content-Type,Authorization",
     "Access-Control-Allow-Methods": "OPTIONS,POST",
     "Vary": "Origin",
@@ -30,12 +56,8 @@ def _resp(code: int, obj: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 def _http_method(event: Dict[str, Any]) -> str:
-    # HTTP API v2
     m = event.get("requestContext", {}).get("http", {}).get("method")
-    if m:
-        return m
-    # REST API v1
-    return event.get("httpMethod") or "POST"
+    return m or event.get("httpMethod") or "POST"
 
 def _parse_body(event: Dict[str, Any]) -> Dict[str, Any]:
     body = event.get("body")
@@ -49,7 +71,7 @@ def _parse_body(event: Dict[str, Any]) -> Dict[str, Any]:
 def lambda_handler(event, context):
     method = _http_method(event)
 
-    # CORS preflight
+    # Fast CORS preflight
     if method == "OPTIONS":
         return _resp(200, {"ok": True})
 
@@ -68,18 +90,18 @@ def lambda_handler(event, context):
 
     # Basic validation
     for key in ("check_in", "check_out"):
-        if key not in stay or not stay[key]:
+        if not stay.get(key):
             return _resp(400, {"error": "missing_field", "message": f"missing stay.{key}"})
 
     try:
-        # Plan (lightweight)
+        # Plan (lightweight LLM)
         plan = planner.plan(query or "Find a 4-star hotel with a gym, prefer indoor pool.")
 
         # Hotel search
         r1 = mcp.route({"agent": "hotel_search", "stay": stay})
         candidates = r1.get("hotels", []) or []
 
-        # Budget filter (expects per-night est_price_gbp; aligned with your UI)
+        # Budget filter
         r2 = mcp.route({
             "agent": "budget_filter",
             "hotels": candidates,
@@ -95,7 +117,6 @@ def lambda_handler(event, context):
             try:
                 result["narrative"] = narrate(top, candidates)
             except Exception as e:
-                # Don’t fail the whole request if narrative generation hiccups
                 logger.warning("Responder failed: %s", e)
                 result["narrative"] = None
 
