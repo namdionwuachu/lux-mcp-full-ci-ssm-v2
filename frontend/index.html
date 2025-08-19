@@ -47,6 +47,7 @@
   <script type="module">
     // CI writes .env with VITE_LUX_API; Vite inlines it here at build time
     const API_URL = import.meta.env.VITE_LUX_API || "";
+    console.log("Lux API_URL:", API_URL); // helps verify in browser devtools
 
     const notice     = document.getElementById('notice');
     const form       = document.getElementById('f');
