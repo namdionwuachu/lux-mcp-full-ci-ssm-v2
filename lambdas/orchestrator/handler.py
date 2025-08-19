@@ -6,9 +6,9 @@ from typing import Any, Dict
 
 import boto3
 
-from lambdas.orchestrator.mcp import MCP
-from lambdas.orchestrator.agents import planner
-from lambdas.orchestrator.agents.responder import narrate
+from mcp import MCP
+from agents import planner
+from agents.responder import narrate
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
