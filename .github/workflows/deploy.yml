@@ -21,7 +21,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
 
       - uses: actions/setup-python@v5
         with:
@@ -120,7 +120,7 @@ jobs:
         working-directory: frontend
         run: |
           echo "VITE_LUX_API=${{ steps.resolve_api.outputs.api_url }}" > .env
-          npm ci
+          npm install # <-- replace `npm ci`
           npm run build
 
       - name: Upload SPA to S3
