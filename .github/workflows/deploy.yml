@@ -35,7 +35,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - run: npm i -g aws-cdk@2
+      - run: npm i -g aws-cdk@2.141.0
 
       - name: Show tool versions
         run: |
