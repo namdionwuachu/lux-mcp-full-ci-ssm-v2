@@ -15,3 +15,4 @@ class Stay:
     # pricing
     max_price_gbp: Optional[float] = None
 
+
