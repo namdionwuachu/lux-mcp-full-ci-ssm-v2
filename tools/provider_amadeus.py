@@ -22,6 +22,9 @@ FALLBACK_RADIUS_KM = int(os.getenv("AMADEUS_FALLBACK_RADIUS_KM", "20"))
 
 # How many hotelIds per request to the offers endpoint (avoid very long URLs)
 OFFERS_CHUNK_SIZE = int(os.getenv("AMADEUS_OFFERS_CHUNK_SIZE", "20"))
+MAX_HOTELS = int(os.getenv("AMADEUS_MAX_HOTELS", "60"))            # cap hotelIds breadth (3 chunks of 20)
+TARGET_RESULTS = int(os.getenv("AMADEUS_TARGET_RESULTS", "30"))    # stop when we’ve got this many hotels-with-offers
+TIME_BUDGET_SEC = int(os.getenv("AMADEUS_TIME_BUDGET_SEC", "17"))  # finish before Lambda’s 20s
 
 def _hostname_from_base_url(url: str) -> str:
     return "test" if "test.api.amadeus.com" in url else "production"
@@ -114,7 +117,6 @@ def _rest_get(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
     logger.info({"stage": "amadeus_rest_status", "status": r.status_code})
     return r.json()
 
-
 def _list_hotel_ids_by_city(city_code: str, radius_km: int | None = None, hotel_source: str = "ALL") -> List[str]:
     params: Dict[str, Any] = {"cityCode": city_code, "hotelSource": hotel_source}
     if radius_km is not None:
@@ -125,7 +127,6 @@ def _list_hotel_ids_by_city(city_code: str, radius_km: int | None = None, hotel_
     ids = [h.get("hotelId") for h in data if h.get("hotelId")]
     logger.info({"stage": "amadeus_hotel_list_city", "city": city_code, "count": len(ids), "sample": ids[:5]})
     return ids
-
 
 def _list_hotel_ids_by_geocode(lat: float, lon: float, radius_km: int, hotel_source: str = "ALL") -> List[str]:
     params = {
@@ -141,25 +142,44 @@ def _list_hotel_ids_by_geocode(lat: float, lon: float, radius_km: int, hotel_sou
     logger.info({"stage": "amadeus_hotel_list_geocode", "count": len(ids), "sample": ids[:5]})
     return ids
 
-
-def _offers_by_hotel_ids_rest(hotel_ids: List[str], params_base: Dict[str, Any]) -> List[Dict[str, Any]]:
-    results: List[Dict[str, Any]] = []
-    deduped = list(dict.fromkeys(hotel_ids))  # preserve order
-    for i in range(0, len(deduped), OFFERS_CHUNK_SIZE):
-        chunk = ",".join(deduped[i:i + OFFERS_CHUNK_SIZE])
-        params = dict(params_base)
-        params["hotelIds"] = chunk
-        resp = _rest_get("/v3/shopping/hotel-offers", params)
-        part = resp.get("data", []) or []
-        logger.info({"stage": "amadeus_offers_chunk", "chunk_size": len(chunk.split(",")), "returned": len(part)})
-        results.extend(part)
-    logger.info({"stage": "amadeus_offers_total", "count": len(results)})
-    return results
-
-def _offers_by_hotel_ids_sdk(amadeus_client: "Client", hotel_ids: List[str], params_base: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _offers_by_hotel_ids_rest(
+    hotel_ids: List[str],
+    params_base: Dict[str, Any],
+    target_results: Optional[int] = None,
+    deadline_ts: Optional[float] = None,
+) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
     deduped = list(dict.fromkeys(hotel_ids))
     for i in range(0, len(deduped), OFFERS_CHUNK_SIZE):
+        if deadline_ts and time.time() >= deadline_ts:
+            logger.info({"stage": "amadeus_deadline_rest", "collected": len(results)})
+            break
+        chunk_ids = ",".join(deduped[i:i + OFFERS_CHUNK_SIZE])
+        params = dict(params_base)
+        params["hotelIds"] = chunk_ids
+        resp = _rest_get("/v3/shopping/hotel-offers", params)
+        part = resp.get("data", []) or []
+        logger.info({"stage": "amadeus_offers_chunk", "chunk_size": len(chunk_ids.split(",")), "returned": len(part)})
+        results.extend(part)
+        if target_results and len(results) >= target_results:
+            logger.info({"stage": "amadeus_target_hit_rest", "target": target_results})
+            break
+    logger.info({"stage": "amadeus_offers_total_rest", "count": len(results)})
+    return results
+
+def _offers_by_hotel_ids_sdk(
+    amadeus_client: "Client",
+    hotel_ids: List[str],
+    params_base: Dict[str, Any],
+    target_results: Optional[int] = None,
+    deadline_ts: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    results: List[Dict[str, Any]] = []
+    deduped = list(dict.fromkeys(hotel_ids))
+    for i in range(0, len(deduped), OFFERS_CHUNK_SIZE):
+        if deadline_ts and time.time() >= deadline_ts:
+            logger.info({"stage": "amadeus_deadline_sdk", "collected": len(results)})
+            break
         chunk = ",".join(deduped[i:i + OFFERS_CHUNK_SIZE])
         resp = amadeus_client.shopping.hotel_offers_search.get(
             hotelIds=chunk,
@@ -173,6 +193,9 @@ def _offers_by_hotel_ids_sdk(amadeus_client: "Client", hotel_ids: List[str], par
         part = resp.data or []
         logger.info({"stage": "amadeus_offers_chunk_sdk", "chunk_size": len(chunk.split(",")), "returned": len(part)})
         results.extend(part)
+        if target_results and len(results) >= target_results:
+            logger.info({"stage": "amadeus_target_hit_sdk", "target": target_results})
+            break
     logger.info({"stage": "amadeus_offers_total_sdk", "count": len(results)})
     return results
 
@@ -231,18 +254,35 @@ def search_hotels(stay_details: Dict[str, Any]) -> List[Dict[str, Any]]:
         logger.info("[amadeus] no hotels found after city+geocode lookups")
         return []
 
+    # Dedupe & cap breadth to stay under ~20s
+    hotel_ids = list(dict.fromkeys(hotel_ids))[:MAX_HOTELS]
+    logger.info({"stage": "amadeus_hotel_ids_capped", "count": len(hotel_ids)})
+
+    # Early-exit budget
+    deadline_ts = time.time() + TIME_BUDGET_SEC
+
     # 3) Fetch offers (SDK if available, else REST)
     try:
         if HAVE_SDK and _amadeus_sdk_client:
-            offers = _offers_by_hotel_ids_sdk(_amadeus_sdk_client, hotel_ids, params_base)
+            offers = _offers_by_hotel_ids_sdk(
+                _amadeus_sdk_client,
+                hotel_ids,
+                params_base,
+                target_results=TARGET_RESULTS,
+                deadline_ts=deadline_ts,
+            )
         else:
-            offers = _offers_by_hotel_ids_rest(hotel_ids, params_base)
+            offers = _offers_by_hotel_ids_rest(
+                hotel_ids,
+                params_base,
+                target_results=TARGET_RESULTS,
+                deadline_ts=deadline_ts,
+            )
         logger.info({"stage": "amadeus_offers_total", "count": len(offers)})
         return offers
     except Exception as e:
         logger.warning({"stage": "amadeus_offers_by_ids_failed", "error": str(e)})
         return []
-
 
 def _amadeus_search(search_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Compatibility wrapper if other code imports this name."""
@@ -273,3 +313,4 @@ def search_activities(latitude: float, longitude: float) -> List[Dict[str, Any]]
     except Exception as e:
         logger.error(f"[amadeus] search_activities failed: {e}")
         return []
+
