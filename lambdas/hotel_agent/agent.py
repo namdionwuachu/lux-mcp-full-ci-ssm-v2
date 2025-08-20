@@ -1,6 +1,7 @@
 """Hotel agent: provider search (city/neighborhood/geo), 4★+gym filter, per-night price."""
 from typing import Dict, Any, List
 from datetime import date
+from dataclasses import fields
 from shared.models import Stay
 from tools.web_search import search_hotels
 from tools.hotels_filter import filter_four_star_with_gym
@@ -52,13 +53,26 @@ def _normalize_hotel(h: Dict[str, Any], nights: int) -> Dict[str, Any]:
 
 
 def run(task: Dict[str, Any]) -> Dict[str, Any]:
-    stay = Stay(**task["stay"])
+    # Accept either {"stay": {...}} or the stay dict directly
+    raw = (task or {}).get("stay") or (task or {})
+    if not isinstance(raw, dict):
+        raise ValueError("Missing or invalid 'stay' payload")
+
+    # Filter to only Stay fields so extra keys won't break construction
+    allowed = {f.name for f in fields(Stay)}
+    safe = {k: v for k, v in raw.items() if k in allowed}
+
+    # Ensure required fields exist
+    if not {"check_in", "check_out"}.issubset(safe):
+        raise ValueError("stay.check_in and stay.check_out are required")
+
+    stay = Stay(**safe)
     nights = _nights(stay.check_in, stay.check_out)
 
-    # Provider fetch (generic, no hard-coding; updated provider returns per-night when possible)
+    # Provider fetch (generic, no hard-coding; provider returns per-night when possible)
     candidates: List[Dict[str, Any]] = search_hotels(stay)
 
-    # Business rules: 4★+gym; pool bonus is decided by filter using user's preference
+    # Business rules: 4★+gym; pool bonus decided by filter using user's preference
     hotels = filter_four_star_with_gym(
         candidates,
         wants_indoor_pool=bool(getattr(stay, "wants_indoor_pool", False)),
@@ -69,6 +83,7 @@ def run(task: Dict[str, Any]) -> Dict[str, Any]:
     out = [_normalize_hotel(h, nights) for h in hotels]
 
     return {"status": "ok", "hotels": out}
+
 
       
   
