@@ -1,26 +1,31 @@
-
 """Lambda shim for hotel agent."""
 import json
 import logging
-from typing import Any, Dict, Optional
+import base64
+from typing import Any, Dict
 from agent import run
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-def _parse_task(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _parse_task(event: Dict[str, Any]) -> Dict[str, Any]:
+    # Direct Lambda invoke (orchestrator passes a plain dict)
+    if isinstance(event, dict) and ("stay" in event or "hotels" in event):
+        return event
+
     # API Gateway (HTTP/API) proxy events
-    if "body" in event:
-        body = event["body"]
+    body = event.get("body")
+    if body is not None:
         if event.get("isBase64Encoded"):
-            import base64
             body = base64.b64decode(body).decode("utf-8", "ignore")
         return json.loads(body) if body else {}
+
     # SQS-style events
-    if isinstance(event.get("Records"), list) and event["Records"]:
-        body = event["Records"][0].get("body")
-        return json.loads(body) if body else {}
-    # Fallback
+    records = event.get("Records")
+    if isinstance(records, list) and records:
+        b = records[0].get("body")
+        return json.loads(b) if b else {}
+
     return {}
 
 def _response(status: int, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -41,9 +46,11 @@ def lambda_handler(event, context):
     except Exception as e:
         logger.exception("Failed to parse request")
         return _response(400, {"status": "error", "message": f"Bad request: {e}"})
+
     try:
         result = run(task or {})
         return _response(200, result)
     except Exception as e:
         logger.exception("Hotel agent error")
         return _response(500, {"status": "error", "message": str(e)})
+
