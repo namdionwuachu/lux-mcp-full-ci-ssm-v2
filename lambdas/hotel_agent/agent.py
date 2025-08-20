@@ -48,7 +48,7 @@ def run(task: Dict[str, Any]) -> Dict[str, Any]:
     stay = Stay(**task["stay"])
     nights = _nights(stay.check_in, stay.check_out)
 
-    candidates: List[Dict[str, Any]] = search_hotels(stay)
+    candidates: List[Dict[str, Any]] = search_hotels(stay.__dict__)
 
     hotels = filter_four_star_with_gym(
         candidates,
