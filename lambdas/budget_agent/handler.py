@@ -2,7 +2,7 @@
 import json
 import logging
 from typing import Any, Dict, Optional
-from .agent import run
+from agent import run
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)

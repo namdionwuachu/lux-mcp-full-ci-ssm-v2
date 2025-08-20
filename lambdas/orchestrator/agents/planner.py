@@ -3,6 +3,7 @@ from typing import List, Dict, Any
 from shared.bedrock_planner import LLMPlanner as LLM
 import json, re
 
+
 ALLOWED_AGENTS = ["hotel_search", "budget_filter"]
 DEFAULT_PLAN = {"agents": ["hotel_search", "budget_filter"], "notes": "default plan"}
 
@@ -19,22 +20,26 @@ Rules:
 Request: {query}
 JSON:
 """
-
 def _sanitize(plan: Dict[str, Any]) -> Dict[str, Any]:
     agents = plan.get("agents", [])
     if not isinstance(agents, list):
         agents = []
-    # Keep only allowed, preserve order, dedupe
+
+    # keep only allowed + dedupe (preserve order)
     seen = set()
     agents = [a for a in agents if a in ALLOWED_AGENTS and (a not in seen and not seen.add(a))]
-    # Ensure required order (hotel_search first if present)
-    if "hotel_search" in agents:
-        agents = ["hotel_search"] + [a for a in agents if a != "hotel_search"]
-    # Ensure budget_filter appears (it’s required for your flow)
+
+    # ALWAYS include both agents for this flow
+    if "hotel_search" not in agents:
+        agents.insert(0, "hotel_search")
     if "budget_filter" not in agents:
         agents.append("budget_filter")
+
+    # ensure hotel_search is first
+    agents = ["hotel_search"] + [a for a in agents if a != "hotel_search"]
+
     notes = plan.get("notes") if isinstance(plan.get("notes"), str) else "auto plan"
-    return {"agents": agents or DEFAULT_PLAN["agents"], "notes": notes}
+    return {"agents": agents, "notes": notes}
 
 def plan(query: str) -> Dict[str, Any]:
     prompt = PROMPT_TMPL.format(query=query or "", default_json=json.dumps(DEFAULT_PLAN, separators=(",", ":")))
