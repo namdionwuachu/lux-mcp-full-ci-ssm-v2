@@ -16,6 +16,8 @@ def search_hotels(stay_details: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Fixed hotel search - addresses the 400 error
     """
+    # Add this debug line at the very beginning
+    logger.info(f"🔧 FIXED VERSION RUNNING - Debug timestamp: {datetime.now()}")
     try:
         # Extract parameters
         city_code = stay_details.get('cityCode', 'PAR')
