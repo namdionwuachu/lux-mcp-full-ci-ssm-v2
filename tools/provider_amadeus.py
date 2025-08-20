@@ -103,9 +103,17 @@ def _rest_get(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
     headers = {"Authorization": f"Bearer {token}"}
     logger.info({"stage": "amadeus_rest_get", "url": url, "params": params})
     r = _http().get(url, headers=headers, params=params, timeout=30)
+    if r.status_code >= 400:
+        # Log full body so we can see Amadeus error codes/titles
+        try:
+            body = r.text
+        except Exception:
+            body = "<no body available>"
+        logger.error({"stage": "amadeus_rest_error", "status": r.status_code, "url": url, "body": body})
+        r.raise_for_status()
     logger.info({"stage": "amadeus_rest_status", "status": r.status_code})
-    r.raise_for_status()
     return r.json()
+
 
 def _list_hotel_ids_by_city(city_code: str, limit: int = 50) -> List[str]:
     resp = _rest_get(
@@ -168,87 +176,88 @@ logger.info(f"[amadeus] provider_loaded v2 BASE_URL={BASE_URL} HAVE_SDK={HAVE_SD
 
 def search_hotels(stay_details: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Hotel search flow (v3-compatible):
-      1) List hotels to obtain hotelIds (by city, with geocode fallback)
-      2) Fetch offers with /v3/shopping/hotel-offers?hotelIds=...
-    Accepts keys in either snake_case or Amadeus-style camelCase.
-    Returns raw Amadeus 'data' items (keep downstream unchanged).
+    Strategy:
+      A) Try hotelIds via by-city.
+      B) If empty/error, try hotelIds via by-geocode (provided lat/lon or FALLBACK_*).
+      C) If still empty, call /v3/shopping/hotel-offers directly with lat/lon (no hotelIds).
+    Returns raw Amadeus 'data' items to keep downstream unchanged.
     """
     logger.info(f"[amadeus] 🔧 hotel search started @ {datetime.now().isoformat()}")
+
+    # accept snake_case or camelCase
+    city_code = stay_details.get("city_code") or stay_details.get("cityCode")
+    adults = str(stay_details.get("adults", 2))
+    check_in = stay_details.get("check_in") or stay_details.get("checkInDate")
+    check_out = stay_details.get("check_out") or stay_details.get("checkOutDate")
+    currency = stay_details.get("currency", "GBP")
+    rooms = str(stay_details.get("roomQuantity", 1))
+    best_rate_only = "true"
+
+    lat = stay_details.get("lat")
+    lon = stay_details.get("lon")
+    radius_km = int(stay_details.get("radius_km", FALLBACK_RADIUS_KM))
+
+    logger.info({
+        "stage": "amadeus_search_params",
+        "city_code": city_code, "adults": adults,
+        "check_in": check_in, "check_out": check_out,
+        "rooms": rooms, "currency": currency
+    })
+
+    params_base: Dict[str, Any] = {
+        "adults": adults,
+        "checkInDate": check_in,
+        "checkOutDate": check_out,
+        "currency": currency,
+        "roomQuantity": rooms,
+        "bestRateOnly": best_rate_only,
+    }
+
+    offers_data: List[Dict[str, Any]] = []
+    hotel_ids: List[str] = []
+
     try:
-        # Accept both formats
-        city_code = stay_details.get("cityCode") or stay_details.get("city_code") or "PAR"
-        adults = str(stay_details.get("adults", 2))
-        check_in = stay_details.get("checkInDate") or stay_details.get("check_in") or "2025-09-15"
-        check_out = stay_details.get("checkOutDate") or stay_details.get("check_out") or "2025-09-16"
-        currency = stay_details.get("currency", "GBP")
-        rooms = str(stay_details.get("roomQuantity", 1))
-        best_rate_only = "true"
+        # A) by-city
+        if city_code:
+            hotel_ids = _list_hotel_ids_by_city(city_code, limit=50)
+    except Exception as e:
+        logger.warning({"stage": "amadeus_by_city_failed", "error": str(e)})
 
-        logger.info({
-            "stage": "amadeus_search_params",
-            "city_code": city_code, "adults": adults,
-            "check_in": check_in, "check_out": check_out,
-            "rooms": rooms, "currency": currency
-        })
-
-        params_base = {
-            "adults": adults,
-            "checkInDate": check_in,
-            "checkOutDate": check_out,
-            "currency": currency,
-            "roomQuantity": rooms,
-            "bestRateOnly": best_rate_only,
-        }
-
-        # ---- SDK path ----
-        if HAVE_SDK and _amadeus_sdk_client:
-            logger.info("[amadeus] using SDK path")
-            amadeus = _amadeus_sdk_client
-            # Step 1: by-city hotelIds
-            hotels_in_city = amadeus.reference_data.locations.hotels.by_city.get(cityCode=city_code, **{"page[limit]": 50})
-            hotel_ids = [h.get("hotelId") for h in (hotels_in_city.data or []) if h.get("hotelId")]
-            logger.info({"stage": "amadeus_hotel_list_city_sdk", "count": len(hotel_ids), "sample": hotel_ids[:5]})
-
-            if not hotel_ids:
-                # Geocode fallback
-                hotels_geo = amadeus.reference_data.locations.hotels.by_geocode.get(
-                    latitude=FALLBACK_LAT, longitude=FALLBACK_LON, radius=FALLBACK_RADIUS_KM, **{"page[limit]": 50}
-                )
-                hotel_ids = [h.get("hotelId") for h in (hotels_geo.data or []) if h.get("hotelId")]
-                logger.info({"stage": "amadeus_hotel_list_geocode_sdk", "count": len(hotel_ids), "sample": hotel_ids[:5]})
-
-            if not hotel_ids:
-                logger.info(f"[amadeus] no hotels found for city={city_code}")
-                return []
-
-            hotel_ids = hotel_ids[: max(OFFERS_CHUNK_SIZE, 50)]  # cap initial breadth
-            # Step 2: offers by hotelIds
-            return _offers_by_hotel_ids_sdk(amadeus, hotel_ids, params_base)
-
-        # ---- REST fallback ----
-        logger.info("[amadeus] using REST path")
-        hotel_ids = _list_hotel_ids_by_city(city_code, limit=50)
-
+    try:
+        # B) by-geocode fallback (use provided lat/lon if present else FALLBACK_*)
         if not hotel_ids:
-            hotel_ids = _list_hotel_ids_by_geocode(FALLBACK_LAT, FALLBACK_LON, FALLBACK_RADIUS_KM, limit=50)
+            use_lat = float(lat) if isinstance(lat, (int, float)) else FALLBACK_LAT
+            use_lon = float(lon) if isinstance(lon, (int, float)) else FALLBACK_LON
+            hotel_ids = _list_hotel_ids_by_geocode(use_lat, use_lon, radius_km, limit=50)
+    except Exception as e:
+        logger.warning({"stage": "amadeus_by_geocode_failed", "error": str(e)})
 
-        if not hotel_ids:
-            logger.info(f"[amadeus] no hotels found (REST) for city={city_code}")
+    # Fetch offers via hotelIds if we have any
+    if hotel_ids:
+        try:
+            if HAVE_SDK and _amadeus_sdk_client:
+                offers_data = _offers_by_hotel_ids_sdk(_amadeus_sdk_client, hotel_ids, params_base)
+            else:
+                offers_data = _offers_by_hotel_ids_rest(hotel_ids, params_base)
+        except Exception as e:
+            logger.warning({"stage": "amadeus_offers_by_ids_failed", "error": str(e)})
+
+    # C) Last resort: geo-direct offers (no hotelIds)
+    if not offers_data:
+        use_lat = float(lat) if isinstance(lat, (int, float)) else FALLBACK_LAT
+        use_lon = float(lon) if isinstance(lon, (int, float)) else FALLBACK_LON
+        direct_params = dict(params_base)
+        direct_params.update({"latitude": use_lat, "longitude": use_lon, "radius": radius_km})
+        try:
+            resp = _rest_get("/v3/shopping/hotel-offers", direct_params)
+            offers_data = resp.get("data", []) or []
+            logger.info({"stage": "amadeus_offers_geo_direct", "count": len(offers_data)})
+        except Exception as e:
+            logger.error({"stage": "amadeus_offers_geo_direct_failed", "error": str(e)})
             return []
 
-        # Cap to keep requests snappy; more pages can be added later if needed
-        hotel_ids = hotel_ids[: max(OFFERS_CHUNK_SIZE, 50)]
-        data = _offers_by_hotel_ids_rest(hotel_ids, params_base)
-        logger.info({"stage": "amadeus_offers_found_rest", "count": len(data)})
-        return data
-
-    except ResponseError as e:
-        logger.error(f"[amadeus] SDK error: {e}")
-        return []
-    except Exception as e:
-        logger.error(f"[amadeus] Unexpected error in search_hotels: {e}")
-        return []
+    logger.info({"stage": "amadeus_offers_total", "count": len(offers_data)})
+    return offers_data
 
 def _amadeus_search(search_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Compatibility wrapper if other code imports this name."""
