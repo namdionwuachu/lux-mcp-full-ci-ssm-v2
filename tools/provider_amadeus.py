@@ -173,6 +173,27 @@ def _list_hotel_ids_by_city(city_code: str, radius_km: int | None = None, hotel_
     logger.info({"stage": "amadeus_hotel_list_city", "city": city_code, "count": len(ids), "sample": ids[:5]})
     return ids
 
+def _hotel_meta_by_city(city_code: str, radius_km: int | None = None, hotel_source: str = "ALL") -> Dict[str, Dict[str, Any]]:
+    params: Dict[str, Any] = {"cityCode": city_code, "hotelSource": hotel_source}
+    if radius_km is not None:
+        params["radius"] = radius_km
+        params["radiusUnit"] = "KM"
+    resp = _rest_get("/v1/reference-data/locations/hotels/by-city", params)
+    meta: Dict[str, Dict[str, Any]] = {}
+    for h in (resp.get("data") or []):
+        hid = h.get("hotelId")
+        if not hid:
+            continue
+        geo = h.get("geoCode") or {}
+        meta[hid] = {
+            "lat": geo.get("latitude"),
+            "lon": geo.get("longitude"),
+            "rating": h.get("rating"),
+            "name": h.get("name"),
+        }
+    logger.info({"stage": "amadeus_city_meta", "count": len(meta)})
+    return meta
+
 
 def _list_hotel_ids_by_geocode(lat: float, lon: float, radius_km: int, hotel_source: str = "ALL") -> List[str]:
     params = {
@@ -253,7 +274,6 @@ def _offers_by_hotel_ids_sdk(
 # Module banner to confirm deployed version & path
 logger.info(f"[amadeus] provider_loaded v2 BASE_URL={BASE_URL} HAVE_SDK={HAVE_SDK} SECRET_NAME={SECRET_NAME}")
 
-
 def search_hotels(stay_details: Dict[str, Any]) -> List[Dict[str, Any]]:
     logger.info(f"[amadeus] 🔧 hotel search started @ {datetime.now().isoformat()}")
 
@@ -267,17 +287,12 @@ def search_hotels(stay_details: Dict[str, Any]) -> List[Dict[str, Any]]:
     lat = stay_details.get("lat")
     lon = stay_details.get("lon")
 
-    logger.info(
-        {
-            "stage": "amadeus_search_params",
-            "city_code": city_code,
-            "adults": adults,
-            "check_in": check_in,
-            "check_out": check_out,
-            "rooms": rooms,
-            "currency": currency,
-        }
-    )
+    logger.info({
+        "stage": "amadeus_search_params",
+        "city_code": city_code, "adults": adults,
+        "check_in": check_in, "check_out": check_out,
+        "rooms": rooms, "currency": currency
+    })
 
     params_base: Dict[str, Any] = {
         "adults": adults,
@@ -288,7 +303,7 @@ def search_hotels(stay_details: Dict[str, Any]) -> List[Dict[str, Any]]:
         "bestRateOnly": "true",
     }
 
-    # 1) Try by-city first (optionally with a radius and hotelSource)
+    # 1) Try by-city first
     hotel_ids: List[str] = []
     try:
         if city_code:
@@ -296,7 +311,7 @@ def search_hotels(stay_details: Dict[str, Any]) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.warning({"stage": "amadeus_by_city_failed", "error": str(e)})
 
-    # 2) Fallback to geocode (provided lat/lon or London fallback)
+    # 2) Fallback to geocode
     if not hotel_ids:
         use_lat = float(lat) if isinstance(lat, (int, float)) else FALLBACK_LAT
         use_lon = float(lon) if isinstance(lon, (int, float)) else FALLBACK_LON
@@ -309,11 +324,19 @@ def search_hotels(stay_details: Dict[str, Any]) -> List[Dict[str, Any]]:
         logger.info("[amadeus] no hotels found after city+geocode lookups")
         return []
 
-    # Dedupe & cap breadth to stay under ~20s
+    # ✅ Dedupe & cap breadth to stay under ~20s
     hotel_ids = list(dict.fromkeys(hotel_ids))[:MAX_HOTELS]
     logger.info({"stage": "amadeus_hotel_ids_capped", "count": len(hotel_ids)})
 
-    # Early-exit budget
+    # ✅ Enrichment map (lat/lon/rating) from by-city
+    meta_map: Dict[str, Dict[str, Any]] = {}
+    try:
+        if city_code:
+            meta_map = _hotel_meta_by_city(city_code, radius_km=None, hotel_source="ALL")
+    except Exception as e:
+        logger.warning({"stage": "amadeus_city_meta_failed", "error": str(e)})
+
+    # ✅ Early-exit budget
     deadline_ts = time.time() + TIME_BUDGET_SEC
 
     # 3) Fetch offers (SDK if available, else REST)
@@ -343,39 +366,47 @@ def search_hotels(stay_details: Dict[str, Any]) -> List[Dict[str, Any]]:
             hotel = item.get("hotel") or {}
             offer_list = item.get("offers") or []
             geo = hotel.get("geoCode") or {}
+            hid = hotel.get("hotelId") or hotel.get("id") or ""
 
-            # pick the best GBP total across returned offers for this hotel
+            # best GBP total across returned offers for this hotel
             total_gbp = _best_total_gbp(offer_list)
             per_night = (total_gbp / nights) if (total_gbp and nights > 0) else None
 
+            # enrich from meta if missing
+            lat_val = geo.get("latitude") or (meta_map.get(hid) or {}).get("lat")
+            lon_val = geo.get("longitude") or (meta_map.get(hid) or {}).get("lon")
             rating = hotel.get("rating")
+            if rating is None:
+                rating = (meta_map.get(hid) or {}).get("rating")
             try:
                 stars = float(rating) if rating is not None else 0.0
             except Exception:
                 stars = 0.0
 
-            cards.append(
-                {
-                    "name": hotel.get("name"),
-                    "stars": stars,
-                    "url": "",
-                    "location_note": (
-                        stay_details.get("neighborhood") or stay_details.get("city") or city_code or ""
-                    ),
-                    "amenities": _norm_amenities(hotel, offer_list),
-                    "est_price_gbp": per_night,
-                    "lat": geo.get("latitude"),
-                    "lon": geo.get("longitude"),
-                }
-            )
+            cards.append({
+                "name": hotel.get("name") or (meta_map.get(hid) or {}).get("name"),
+                "stars": stars,
+                "url": "",
+                "location_note": (
+                    stay_details.get("neighborhood")
+                    or stay_details.get("city")
+                    or city_code
+                    or ""
+                ),
+                "amenities": _norm_amenities(hotel, offer_list),
+                "est_price_gbp": per_night,
+                "lat": lat_val,
+                "lon": lon_val,
+            })
 
+        # Sort cheapest-first (optional)
+        cards.sort(key=lambda x: (float("inf") if x["est_price_gbp"] is None else x["est_price_gbp"]))
         logger.info({"stage": "amadeus_cards_total", "count": len(cards)})
         return cards
 
     except Exception as e:
         logger.warning({"stage": "amadeus_offers_by_ids_failed", "error": str(e)})
         return []
-
 
 def _amadeus_search(search_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Compatibility wrapper if other code imports this name."""
