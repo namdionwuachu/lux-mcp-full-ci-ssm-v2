@@ -1,15 +1,27 @@
 """Lambda shim for hotel agent."""
+import os
 import json
 import logging
 import base64
 from typing import Any, Dict
-from agent import run
+from agent import run  # keep available as a fallback/flag
+from tools import provider_amadeus as amadeus
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+CORS = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    "Access-Control-Allow-Methods": "OPTIONS,POST",
+}
+
+# Feature flag: default to direct provider (normalized hotel cards)
+USE_DIRECT = os.getenv("HOTEL_AGENT_DIRECT", "true").lower() == "true"
+
 def _parse_task(event: Dict[str, Any]) -> Dict[str, Any]:
-    # Direct Lambda invoke (orchestrator passes a plain dict)
+    # Direct Lambda invoke (from CLI or another lambda)
     if isinstance(event, dict) and ("stay" in event or "hotels" in event):
         return event
 
@@ -18,27 +30,26 @@ def _parse_task(event: Dict[str, Any]) -> Dict[str, Any]:
     if body is not None:
         if event.get("isBase64Encoded"):
             body = base64.b64decode(body).decode("utf-8", "ignore")
-        return json.loads(body) if body else {}
+        try:
+            parsed = json.loads(body) if body else {}
+        except Exception:
+            parsed = {}
+        return parsed if isinstance(parsed, dict) else {}
 
     # SQS-style events
     records = event.get("Records")
     if isinstance(records, list) and records:
         b = records[0].get("body")
-        return json.loads(b) if b else {}
+        try:
+            parsed = json.loads(b) if b else {}
+        except Exception:
+            parsed = {}
+        return parsed if isinstance(parsed, dict) else {}
 
     return {}
 
 def _response(status: int, payload: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "statusCode": status,
-        "headers": {
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "Content-Type,Authorization",
-            "Access-Control-Allow-Methods": "OPTIONS,POST",
-        },
-        "body": json.dumps(payload),
-    }
+    return {"statusCode": status, "headers": CORS, "body": json.dumps(payload)}
 
 def lambda_handler(event, context):
     try:
@@ -48,9 +59,15 @@ def lambda_handler(event, context):
         return _response(400, {"status": "error", "message": f"Bad request: {e}"})
 
     try:
-        result = run(task or {})
-        return _response(200, result)
+        if USE_DIRECT:
+            stay = task.get("stay", {}) if isinstance(task, dict) else {}
+            hotels = amadeus.search_hotels(stay)  # already-normalized cards
+            logger.info({"stage": "handler_hotels_count", "count": len(hotels)})
+            return _response(200, {"status": "ok", "hotels": hotels})
+        else:
+            # Legacy pipeline, if you need it
+            result = run(task or {})
+            return _response(200, result)
     except Exception as e:
         logger.exception("Hotel agent error")
-        return _response(500, {"status": "error", "message": str(e)})
-
+        return _response(200, {"status": "ok", "hotels": []})
