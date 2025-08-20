@@ -124,6 +124,11 @@ def search_hotels(stay: Dict[str, Any]) -> List[Dict[str, Any]]:
         params["cityCode"] = stay.get("city_code") or _city_code(stay.get("city"))
 
     r = requests.get(f"{BASE_URL}/v3/shopping/hotel-offers", headers=_hdrs(), params=params, timeout=15)
+    print(f"Amadeus request URL: {r.url}")
+    print(f"Amadeus response status: {r.status_code}")
+    print(f"Amadeus response headers: {dict(r.headers)}")
+    print(f"Amadeus response body: {r.text}")
+
     r.raise_for_status()
     data = r.json()
 
