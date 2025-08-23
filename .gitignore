@@ -11,3 +11,14 @@ cdk.context.json
 dist/
 live.zip
 live.zip
+
+# --- Frontend specific ---
+# Local env files
+frontend/.env.local
+
+# Node deps
+frontend/node_modules/
+
+# Build output
+frontend/dist/
+

@@ -60,14 +60,38 @@ def lambda_handler(event, context):
 
     try:
         if USE_DIRECT:
-            stay = task.get("stay", {}) if isinstance(task, dict) else {}
-            hotels = amadeus.search_hotels(stay)  # already-normalized cards
-            logger.info({"stage": "handler_hotels_count", "count": len(hotels)})
-            return _response(200, {"status": "ok", "hotels": hotels})
-        else:
+            
+           # ---- Normalize inputs (city/country_code OR lat/lon) + stay
+           stay = task.get("stay", {}) if isinstance(task, dict) else {}
+           city = (task.get("city") or task.get("destination") or "").strip()
+           country_code = (task.get("country_code") or "").strip().upper()
+           loc = task.get("location") or {}
+
+           query = {
+               "stay": stay,
+               "location": {
+               "lat": float(loc["lat"]) if isinstance(loc, dict) and "lat" in loc else None,
+               "lon": float(loc["lon"]) if isinstance(loc, dict) and "lon" in loc else None,
+               "radius_km": int(loc.get("radius_km", 15)) if isinstance(loc, dict) else None,
+               },
+               "city": city or None,
+               "country_code": country_code or None,
+               "budget_max": task.get("budget_max"),
+               "preferences": task.get("preferences") or [],
+           }
+
+           # Clean out Nones
+           query["location"] = {k: v for k, v in (query["location"] or {}).items() if v is not None} or None
+           query = {k: v for k, v in query.items() if v not in (None, {}, [])}
+
+           hotels = amadeus.search_hotels(query)  # already-normalized cards
+           logger.info({"stage": "handler_hotels_count", "count": len(hotels)})
+           return _response(200, {"status": "ok", "hotels": hotels})
+
+         else:
             # Legacy pipeline, if you need it
             result = run(task or {})
             return _response(200, result)
-    except Exception as e:
-        logger.exception("Hotel agent error")
-        return _response(200, {"status": "ok", "hotels": []})
+         except Exception as e:
+            logger.exception("Hotel agent error")
+            return _response(200, {"status": "ok", "hotels": []})

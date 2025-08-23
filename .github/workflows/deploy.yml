@@ -62,9 +62,9 @@ jobs:
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           cdk bootstrap aws://$ACCOUNT_ID/${{ env.AWS_REGION }} --app "python app.py"
 
-      - name: Deploy Backend (LuxStack)
+      - name: Deploy Backend (LuxStack) - MCP mode
         working-directory: cdk
-        run: cdk deploy LuxStack --require-approval never --app "python app.py"
+        run: cdk deploy LuxStack -c useMcp=true --require-approval never --app "python app.py"
 
       - name: Deploy Frontend Infra (LuxFrontendStack)
         working-directory: cdk

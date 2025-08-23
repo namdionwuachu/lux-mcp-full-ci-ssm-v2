@@ -9,17 +9,19 @@ DEFAULT_PLAN = {"agents": ["hotel_search", "budget_filter"], "notes": "default p
 
 PROMPT_TMPL = """You are a planner.
 Return ONLY valid, minified JSON matching this schema:
-{{
+{
   "agents": ["hotel_search","budget_filter"],  // ordered list; hotel_search must come before budget_filter
-  "notes": "one short line"
-}}
+  "notes": "one short line summarizing any user constraints you detect (city, dates, budget, amenities)"
+}
 Rules:
 - No markdown or prose, JSON only.
+- The "notes" field must mention detected constraints if present (e.g., "Paris, 10–12 Sep 2025, £300/night, indoor pool").
 - If unsure, return {default_json}.
 
 Request: {query}
 JSON:
 """
+
 def _sanitize(plan: Dict[str, Any]) -> Dict[str, Any]:
     agents = plan.get("agents", [])
     if not isinstance(agents, list):
@@ -55,4 +57,5 @@ def plan(query: str) -> Dict[str, Any]:
         return _sanitize(candidate)
     except Exception:
         return DEFAULT_PLAN
+
 

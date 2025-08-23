@@ -4,7 +4,8 @@ import json
 import time
 import logging
 from datetime import datetime, date as _date
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, TypedDict, NotRequired
+import urllib.parse
 
 import boto3
 
@@ -25,6 +26,11 @@ OFFERS_CHUNK_SIZE = int(os.getenv("AMADEUS_OFFERS_CHUNK_SIZE", "20"))
 MAX_HOTELS = int(os.getenv("AMADEUS_MAX_HOTELS", "60"))             # cap hotelIds breadth (3 chunks of 20)
 TARGET_RESULTS = int(os.getenv("AMADEUS_TARGET_RESULTS", "30"))     # stop when we’ve got this many hotels-with-offers
 TIME_BUDGET_SEC = int(os.getenv("AMADEUS_TIME_BUDGET_SEC", "17"))   # finish before Lambda’s 20s
+
+# ---- Optional Google Places (for images/links) ----
+GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")  # optional
+ENABLE_PLACES_PHOTOS = os.getenv("ENABLE_PLACES_PHOTOS", "0").lower() in {"1", "true", "yes"}
+MAX_PHOTOS_PER_HOTEL = int(os.getenv("MAX_PHOTOS_PER_HOTEL", "4"))
 
 
 def _hostname_from_base_url(url: str) -> str:
@@ -126,6 +132,36 @@ def _rest_get(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
     logger.info({"stage": "amadeus_rest_status", "status": r.status_code})
     return r.json()
 
+def _resolve_city(name: str, country_code: Optional[str] = None) -> tuple[Optional[str], Optional[tuple[float, float]]]:
+    """
+    Resolve a free-text city name to (city_code, (lat, lon)).
+    Tries SDK first if available; falls back to REST.
+    """
+    try:
+        params = {"keyword": name, "subType": "CITY"}
+        if country_code:
+            params["countryCode"] = country_code
+
+        if HAVE_SDK and _amadeus_sdk_client:
+            resp = _amadeus_sdk_client.reference_data.locations.get(**params)  # type: ignore
+            data = getattr(resp, "data", []) or []
+        else:
+            data = (_rest_get("/v1/reference-data/locations", params) or {}).get("data", []) or []
+
+        if not data:
+            return None, None
+
+        best = data[0]
+        code = best.get("iataCode") or best.get("cityCode")
+        geo = best.get("geoCode") or {}
+        lat = geo.get("latitude")
+        lon = geo.get("longitude")
+        return code, ((lat, lon) if lat is not None and lon is not None else None)
+    except Exception as e:
+        logger.warning({"stage": "amadeus_city_resolve_failed", "error": str(e), "name": name, "cc": country_code})
+        return None, None
+
+
 
 def _nights(ci: Optional[str], co: Optional[str]) -> int:
     try:
@@ -222,18 +258,93 @@ def _offers_by_hotel_ids_rest(
         if deadline_ts and time.time() >= deadline_ts:
             logger.info({"stage": "amadeus_deadline_rest", "collected": len(results)})
             break
+
         chunk_ids = ",".join(deduped[i : i + OFFERS_CHUNK_SIZE])
         params = dict(params_base)
+
+        # Coerce SDK-friendly types to REST-friendly strings
+        if isinstance(params.get("bestRateOnly"), bool):
+            params["bestRateOnly"] = "true" if params["bestRateOnly"] else "false"
+        if isinstance(params.get("adults"), int):
+            params["adults"] = str(params["adults"])
+        if isinstance(params.get("roomQuantity"), int):
+            params["roomQuantity"] = str(params["roomQuantity"])
+
         params["hotelIds"] = chunk_ids
+
         resp = _rest_get("/v3/shopping/hotel-offers", params)
         part = resp.get("data", []) or []
         logger.info({"stage": "amadeus_offers_chunk", "chunk_size": len(chunk_ids.split(",")), "returned": len(part)})
         results.extend(part)
+
         if target_results and len(results) >= target_results:
             logger.info({"stage": "amadeus_target_hit_rest", "target": target_results})
             break
+
     logger.info({"stage": "amadeus_offers_total_rest", "count": len(results)})
     return results
+
+
+
+def _maps_url(name: Optional[str], city_for_url: str, lat: Optional[float], lon: Optional[float]) -> str:
+    if lat is not None and lon is not None:
+        return f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
+    q_parts = [p for p in [name, city_for_url] if p]
+    q = urllib.parse.quote_plus(", ".join(q_parts) if q_parts else "hotel")
+    return f"https://www.google.com/maps/search/?api=1&query={q}"
+
+def _extract_images_from_offers(offers: List[Dict[str, Any]]) -> List[str]:
+    imgs: List[str] = []
+    for o in offers or []:
+        hotel_blk = o.get("hotel") or {}
+        media = hotel_blk.get("media") or o.get("media") or []
+        for m in media:
+            u = m.get("uri") or m.get("url")
+            if u:
+                imgs.append(u)
+    # de-dupe
+    out, seen = [], set()
+    for u in imgs:
+        if u in seen: continue
+        seen.add(u); out.append(u)
+    return out
+
+def _places_photos(name: Optional[str], city_for_url: str, lat: Optional[float], lon: Optional[float]) -> List[str]:
+    if not ENABLE_PLACES_PHOTOS or not GOOGLE_PLACES_API_KEY:
+        return []
+    try:
+        import requests  # uses existing session pattern elsewhere but simple here
+        # Prefer nearby if geo is known; else text query
+        if lat is not None and lon is not None:
+            url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+            params = {"key": GOOGLE_PLACES_API_KEY, "location": f"{lat},{lon}", "radius": "500",
+                      "keyword": f"{name}, {city_for_url}" if name else city_for_url}
+            r = requests.get(url, params=params, timeout=2.5)
+            j = r.json()
+            results = j.get("results", [])
+        else:
+            url = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
+            params = {"key": GOOGLE_PLACES_API_KEY, "input": f"{name}, {city_for_url}" if name else city_for_url,
+                      "inputtype": "textquery", "fields": "photos,place_id"}
+            r = requests.get(url, params=params, timeout=2.5)
+            j = r.json()
+            results = j.get("candidates", [])
+
+        if not results:
+            return []
+        photos = results[0].get("photos", []) or []
+        out: List[str] = []
+        for ph in photos[:MAX_PHOTOS_PER_HOTEL]:
+            pref = ph.get("photo_reference")
+            if not pref: continue
+            out.append(
+                "https://maps.googleapis.com/maps/api/place/photo"
+                f"?maxwidth=1600&photo_reference={urllib.parse.quote_plus(pref)}&key={GOOGLE_PLACES_API_KEY}"
+            )
+        return out
+    except Exception as e:
+        logger.warning({"stage": "places_photos_failed", "error": str(e)})
+        return []
 
 
 def _offers_by_hotel_ids_sdk(
@@ -274,36 +385,90 @@ def _offers_by_hotel_ids_sdk(
 # Module banner to confirm deployed version & path
 logger.info(f"[amadeus] provider_loaded v2 BASE_URL={BASE_URL} HAVE_SDK={HAVE_SDK} SECRET_NAME={SECRET_NAME}")
 
-def search_hotels(stay_details: Dict[str, Any]) -> List[Dict[str, Any]]:
+class HotelCard(TypedDict, total=False):
+    id: str
+    name: str
+    stars: float
+    url: str
+    images: List[str]
+    location_note: str
+    amenities: List[str]
+    est_price_gbp: Optional[float]
+    lat: NotRequired[Optional[float]]
+    lon: NotRequired[Optional[float]]
+
+class SearchResult(TypedDict, total=False):
+    status: str            # "ok" | "error"
+    hotels: List[HotelCard]
+    error: str
+
+def search_hotels(params: Dict[str, Any]) -> SearchResult:
+    """
+    Accepts either the new shape
+      {
+        "stay": {"check_in": "...", "check_out": "..."},
+        "location": {"lat": ..., "lon": ..., "radius_km": ...},  # optional
+        "city": "Paris", "country_code": "FR",                    # optional
+        "adults": 2, "roomQuantity": 1, "currency": "GBP",        # optional
+        "budget_max": 200, "preferences": ["indoor_pool"]         # passthrough
+      }
+
+    …or the legacy flat shape with top-level keys (city, lat, lon, check_in, …).
+    """
+
     logger.info(f"[amadeus] 🔧 hotel search started @ {datetime.now().isoformat()}")
 
-    city_code = stay_details.get("city_code") or stay_details.get("cityCode")
-    adults = str(stay_details.get("adults", 2))
-    check_in = stay_details.get("check_in") or stay_details.get("checkInDate")
-    check_out = stay_details.get("check_out") or stay_details.get("checkOutDate")
-    currency = stay_details.get("currency", "GBP")
-    rooms = str(stay_details.get("roomQuantity", 1))
-    radius_km = int(stay_details.get("radius_km", FALLBACK_RADIUS_KM))
-    lat = stay_details.get("lat")
-    lon = stay_details.get("lon")
+    # ---- Unpack with backward-compat ----
+    stay = params.get("stay") or {}
+    check_in = stay.get("check_in") or params.get("check_in") or params.get("checkInDate")
+    check_out = stay.get("check_out") or params.get("check_out") or params.get("checkOutDate")
+    if not check_in or not check_out:
+        return {"status": "error", "hotels": [], "error": "missing stay.check_in/check_out"}
+
+    loc = params.get("location") or {}
+    # Prefer nested location.* then fall back to legacy top-level lat/lon
+    lat = loc.get("lat", params.get("lat"))
+    lon = loc.get("lon", params.get("lon"))
+    radius_km = int(loc.get("radius_km", params.get("radius_km", FALLBACK_RADIUS_KM)))
+
+    city_code = params.get("city_code") or params.get("cityCode")
+    city_name = params.get("city") or params.get("city_name")
+    country_cc = (
+        params.get("country_code")
+        or params.get("country")
+        or loc.get("country_code")
+    )
+
+    adults = int(params.get("adults", 2))
+    rooms = int(params.get("roomQuantity", 1))
+    currency = params.get("currency", "GBP")
+
+    # ---- Resolve city -> (city_code, lat/lon) if needed ----
+    resolved_center = None
+    if not city_code and city_name:
+        city_code, resolved_center = _resolve_city(city_name, country_cc)
+
+    if (lat is None or lon is None) and resolved_center:
+        lat, lon = resolved_center
 
     logger.info({
         "stage": "amadeus_search_params",
-        "city_code": city_code, "adults": adults,
-        "check_in": check_in, "check_out": check_out,
-        "rooms": rooms, "currency": currency
+        "city": city_name, "country": country_cc, "city_code": city_code,
+        "lat": lat, "lon": lon, "radius_km": radius_km,
+        "adults": adults, "rooms": rooms, "currency": currency
     })
 
+    # ---- Build common offer params ----
     params_base: Dict[str, Any] = {
         "adults": adults,
         "checkInDate": check_in,
         "checkOutDate": check_out,
         "currency": currency,
         "roomQuantity": rooms,
-        "bestRateOnly": "true",
+        "bestRateOnly": True,
     }
 
-    # 1) Try by-city first
+    # ---- 1) Try by-city first (if we have a city_code) ----
     hotel_ids: List[str] = []
     try:
         if city_code:
@@ -311,7 +476,7 @@ def search_hotels(stay_details: Dict[str, Any]) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.warning({"stage": "amadeus_by_city_failed", "error": str(e)})
 
-    # 2) Fallback to geocode
+    # ---- 2) Fallback to geocode (requires some lat/lon; otherwise use global fallback) ----
     if not hotel_ids:
         use_lat = float(lat) if isinstance(lat, (int, float)) else FALLBACK_LAT
         use_lon = float(lon) if isinstance(lon, (int, float)) else FALLBACK_LON
@@ -322,13 +487,13 @@ def search_hotels(stay_details: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     if not hotel_ids:
         logger.info("[amadeus] no hotels found after city+geocode lookups")
-        return []
+        return {"status": "ok", "hotels": []}
 
-    # ✅ Dedupe & cap breadth to stay under ~20s
+    # ---- Dedupe & cap ----
     hotel_ids = list(dict.fromkeys(hotel_ids))[:MAX_HOTELS]
     logger.info({"stage": "amadeus_hotel_ids_capped", "count": len(hotel_ids)})
 
-    # ✅ Enrichment map (lat/lon/rating) from by-city
+    # ---- Enrichment map (lat/lon/rating) from by-city ----
     meta_map: Dict[str, Dict[str, Any]] = {}
     try:
         if city_code:
@@ -336,10 +501,9 @@ def search_hotels(stay_details: Dict[str, Any]) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.warning({"stage": "amadeus_city_meta_failed", "error": str(e)})
 
-    # ✅ Early-exit budget
     deadline_ts = time.time() + TIME_BUDGET_SEC
 
-    # 3) Fetch offers (SDK if available, else REST)
+    # ---- 3) Fetch offers (SDK if available, else REST) ----
     try:
         if HAVE_SDK and _amadeus_sdk_client:
             offers = _offers_by_hotel_ids_sdk(
@@ -359,7 +523,7 @@ def search_hotels(stay_details: Dict[str, Any]) -> List[Dict[str, Any]]:
 
         logger.info({"stage": "amadeus_offers_total", "count": len(offers)})
 
-        # Normalize raw Amadeus offers → hotel cards expected downstream
+        # ---- Normalize to HotelCard ----
         nights = _nights(check_in, check_out)
         cards: List[Dict[str, Any]] = []
         for item in offers:
@@ -368,11 +532,9 @@ def search_hotels(stay_details: Dict[str, Any]) -> List[Dict[str, Any]]:
             geo = hotel.get("geoCode") or {}
             hid = hotel.get("hotelId") or hotel.get("id") or ""
 
-            # best GBP total across returned offers for this hotel
             total_gbp = _best_total_gbp(offer_list)
             per_night = (total_gbp / nights) if (total_gbp and nights > 0) else None
 
-            # enrich from meta if missing
             lat_val = geo.get("latitude") or (meta_map.get(hid) or {}).get("lat")
             lon_val = geo.get("longitude") or (meta_map.get(hid) or {}).get("lon")
             rating = hotel.get("rating")
@@ -383,13 +545,23 @@ def search_hotels(stay_details: Dict[str, Any]) -> List[Dict[str, Any]]:
             except Exception:
                 stars = 0.0
 
+            city_for_url = (params.get("city") or city_name or city_code or "") or ""
+            name_val = hotel.get("name") or (meta_map.get(hid) or {}).get("name")
+            maps_url = _maps_url(name_val, city_for_url, lat_val, lon_val)
+
+            images = _extract_images_from_offers(offer_list)
+            if not images:
+                images = _places_photos(name_val, city_for_url, lat_val, lon_val)
+
             cards.append({
-                "name": hotel.get("name") or (meta_map.get(hid) or {}).get("name"),
+                "id": hid,
+                "name": name_val,
                 "stars": stars,
-                "url": "",
+                "url": maps_url,
+                "images": images or [],
                 "location_note": (
-                    stay_details.get("neighborhood")
-                    or stay_details.get("city")
+                    params.get("neighborhood")
+                    or params.get("city")
                     or city_code
                     or ""
                 ),
@@ -399,16 +571,15 @@ def search_hotels(stay_details: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "lon": lon_val,
             })
 
-        # Sort cheapest-first (optional)
         cards.sort(key=lambda x: (float("inf") if x["est_price_gbp"] is None else x["est_price_gbp"]))
         logger.info({"stage": "amadeus_cards_total", "count": len(cards)})
-        return cards
+        return {"status": "ok", "hotels": cards}
 
     except Exception as e:
         logger.warning({"stage": "amadeus_offers_by_ids_failed", "error": str(e)})
-        return []
+        return {"status": "error", "hotels": [], "error": str(e)}
 
-def _amadeus_search(search_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _amadeus_search(search_data: Dict[str, Any]):
     """Compatibility wrapper if other code imports this name."""
     return search_hotels(search_data)
 
