@@ -1,129 +1,266 @@
-// Robust normalizer that accepts legacy + newer shapes.
-// It tries, in order, to find hotels in: api.hotels | api.results | api.top | api.candidates | api.hits
-// Price fields it understands: est_price_gbp | est_price (+ currency) | price.amount (+ price.currency) | best_total
-// Images fields: images | photo_urls | photos[].url
-// URL: url | link | deep_link (fallback to maps search in the card)
-function pickArray(...candidates) {
-  for (const c of candidates) if (Array.isArray(c) && c.length) return c;
-  return [];
-}
-function pick(obj, path, def) {
-  try {
-    return path.split('.').reduce((o, k) => (o && k in o ? o[k] : undefined), obj) ?? def;
-  } catch { return def; }
-}
-function coerceNumber(n) {
-  const v = typeof n === "string" ? Number(n) : n;
-  return Number.isFinite(v) ? v : undefined;
+// frontend/src/api/normalize.js
+
+/**
+ * Normalize a variety of backend shapes (planner or direct search)
+ * into a consistent structure:
+ *
+ * {
+ *   items: [
+ *     {
+ *       id, name,
+ *       price: number | null,
+ *       currency: "GBP" | "USD" | ... | null,
+ *       address: "string" | null,
+ *       city: "string" | null,
+ *       lat: number | null,
+ *       lng: number | null,
+ *       stars: number | null,
+ *       rating: number | null,
+ *       thumbnail: "https://..." | null,
+ *       source: "hotel_search" | "plan" | "unknown",
+ *       raw: {...original item...}
+ *     }
+ *   ],
+ *   meta: {...any useful metadata we can surface...}
+ * }
+ */
+
+export function normalizeSearchResponse(input) {
+  if (!input) return empty();
+
+  // planner outputs often contain steps with embedded search results
+  // try several common locations where items/offers may live
+  const candidates = [
+    input.items,
+    input.results,
+    input.offers,
+    input.hotels,
+    input.data,
+    input.payload,
+    input.steps && flattenSteps(input.steps),
+  ].filter(Boolean);
+
+  const flat = flattenArray(candidates);
+
+  // last resort: if no obvious array, but input itself looks like a single item
+  const sourceItems = flat.length
+    ? flat
+    : (looksLikeHotel(input) || looksLikeOffer(input)) ? [input] : [];
+
+  const items = sourceItems
+    .map(coerceItem)     // If planner returns step-wrapped objects
+    .map(normalizeItem)  // Map to canonical fields
+    .filter(Boolean);
+
+  const meta = extractMeta(input);
+
+  return { items, meta };
 }
 
-export function normalizeSearchResponse(api) {
-  if (!api || typeof api !== "object") {
-    return { hotels: [], narrative: "", notes: [], use_responder: false };
+/* ----------------- helpers ----------------- */
+
+function empty() {
+  return { items: [], meta: {} };
+}
+
+function flattenArray(arrays) {
+  const out = [];
+  for (const a of arrays) {
+    if (Array.isArray(a)) out.push(...a);
   }
+  return out;
+}
 
-  // ------------- narrative / notes / version -------------
-  const narrative =
-    pick(api, "narrative") ??
-    pick(api, "responder.narrative") ??
-    "";
+function flattenSteps(steps) {
+  // Handle shapes like [{type:"hotel_search", result:{offers:[...]}}]
+  const out = [];
+  for (const s of steps || []) {
+    if (!s) continue;
+    const r = s.result || s.output || s.data || null;
+    const pools = [r?.offers, r?.items, r?.results, r?.hotels, r?.data];
+    for (const pool of pools) {
+      if (Array.isArray(pool)) out.push(...pool);
+    }
+  }
+  return out.length ? out : undefined;
+}
 
-  // notes can be string or array (planner notes)
-  const notesRaw =
-    pick(api, "notes") ??
-    pick(api, "plan.notes") ??
-    pick(api, "planner.notes");
-  const notes = Array.isArray(notesRaw) ? notesRaw : (notesRaw ? [notesRaw] : []);
-
-  // optional: read api version if backend provides it (future-proofing)
-  const apiVersion =
-    pick(api, "version") ??
-    pick(api, "plan.api_version") ??
-    pick(api, "meta.api_version");
-
-  // ------------- choose the hotel list -------------
-  const hotelsSource = pickArray(
-    pick(api, "hotels"),
-    pick(api, "results"),
-    pick(api, "top"),
-    pick(api, "candidates"),
-    pick(api, "hits")
+function looksLikeHotel(x = {}) {
+  return !!(
+    x.name ||
+    x.hotelName ||
+    x.propertyName ||
+    x.hotel ||
+    x.property
   );
+}
 
-  const hotels = hotelsSource.map((h, i) => {
-    const name =
-      h.name ??
-      h.title ??
-      `Hotel ${i + 1}`;
+function looksLikeOffer(x = {}) {
+  return !!(
+    x.price ||
+    x.total ||
+    x.amount ||
+    x.rate ||
+    x.nightlyPrice ||
+    x.pricing ||
+    x.offer ||
+    x.room
+  );
+}
 
-    // address & location
-    const address =
-      h.address ??
-      h.location_note ??
-      pick(h, "location.address") ??
-      pick(h, "vicinity") ??
-      "";
+function coerceItem(x = {}) {
+  // If planner wrapped the item like {type:"hotel", data:{...}}
+  if (x.data && (looksLikeHotel(x.data) || looksLikeOffer(x.data))) return x.data;
+  if (x.result && (looksLikeHotel(x.result) || looksLikeOffer(x.result))) return x.result;
+  if (x.hotel) return x.hotel;
+  if (x.offer) return x.offer;
+  return x;
+}
 
-    const lat = coerceNumber(h.lat ?? pick(h, "location.lat"));
-    const lon = coerceNumber(h.lon ?? pick(h, "location.lon"));
+function normalizeItem(x = {}) {
+  // Name / property
+  const name =
+    x.name ||
+    x.hotelName ||
+    x.propertyName ||
+    x.title ||
+    x.property?.name ||
+    x.hotel?.name ||
+    null;
 
-    // rating / stars: prefer float rating, fallback to integer stars
-    const rating = coerceNumber(h.rating ?? h.stars ?? pick(h, "user_rating"));
+  // ID
+  const id =
+    x.id ||
+    x.hotelId ||
+    x.propertyId ||
+    x.offerId ||
+    x.reference ||
+    (name ? slug(`${name}-${x.checkIn || ""}-${x.checkOut || ""}`) : null);
 
-    // price + currency (support multiple shapes)
-    const priceAmount =
-      coerceNumber(h.est_price_gbp) ??
-      coerceNumber(h.est_price) ??
-      coerceNumber(pick(h, "price.amount")) ??
-      coerceNumber(h.best_total);
+  // Price & currency (try many common shapes)
+  const price =
+    num(x.price?.total) ??
+    num(x.price?.amount) ??
+    num(x.price) ??
+    num(x.total) ??
+    num(x.amount) ??
+    num(x.rate?.amount) ??
+    num(x.nightlyPrice) ??
+    num(x.pricing?.total) ??
+    null;
 
-    const currency =
-      (h.est_price_gbp != null ? "GBP" : undefined) ??
-      h.currency ??
-      pick(h, "price.currency") ??
-      pick(api, "currency") ?? // sometimes returned top-level
-      undefined;
+  const currency =
+    x.price?.currency ||
+    x.currency ||
+    x.rate?.currency ||
+    x.pricing?.currency ||
+    null;
 
-    // url fields (backend may provide a deep link, or we leave blank to fallback in UI)
-    const url = h.url ?? h.link ?? h.deep_link ?? "";
+  // Address / city
+  const address =
+    joinParts([
+      x.address?.line1 || x.address?.address1 || x.address?.street,
+      x.address?.line2 || x.address?.address2,
+      x.address?.postalCode || x.address?.zip,
+    ]) ||
+    x.address?.freeform ||
+    x.address?.full ||
+    x.location?.address ||
+    null;
 
-    // images in various shapes
-    const images =
-      (Array.isArray(h.images) && h.images.length ? h.images :
-        (Array.isArray(h.photo_urls) && h.photo_urls.length ? h.photo_urls :
-          (Array.isArray(h.photos) ? h.photos.map(p => p.url).filter(Boolean) : undefined)
-        )
-      ) || undefined;
+  const city =
+    x.address?.city ||
+    x.city ||
+    x.location?.city ||
+    x.property?.address?.city ||
+    null;
 
-    // id: stable-ish
-    const id =
-      h.id ??
-      h.hotel_id ??
-      `${i}-${name.toLowerCase().replace(/\s+/g, "-").slice(0, 40)}`;
+  // Geo
+  const lat =
+    num(x.location?.lat) ??
+    num(x.location?.latitude) ??
+    num(x.coordinates?.lat) ??
+    num(x.coordinates?.latitude) ??
+    null;
 
-    return {
-      id,
-      name,
-      address,
-      rating,
-      est_price: priceAmount,
-      currency,
-      url,
-      images,
-      lat,
-      lon,
-      // carry-through optional flags if present
-      passes_budget: h.passes_budget,
-      pool_bonus: h.pool_bonus,
-    };
-  });
+  const lng =
+    num(x.location?.lng) ??
+    num(x.location?.lon) ??
+    num(x.location?.longitude) ??
+    num(x.coordinates?.lng) ??
+    num(x.coordinates?.lon) ??
+    num(x.coordinates?.longitude) ??
+    null;
+
+  // Quality signals
+  const stars =
+    num(x.stars) ??
+    num(x.rating?.stars) ??
+    num(x.class) ??
+    num(x.starRating) ??
+    null;
+
+  const rating =
+    num(x.rating?.value) ??
+    num(x.reviewScore) ??
+    num(x.score) ??
+    num(x.guestRating) ??
+    null;
+
+  // Media
+  const thumbnail =
+    x.thumbnail ||
+    x.image ||
+    x.images?.[0] ||
+    x.photos?.[0]?.url ||
+    x.media?.[0]?.url ||
+    null;
+
+  // Source (best guess)
+  const source =
+    x._source ||
+    x.source ||
+    (hasHotelSearchFields(x) ? "hotel_search" : "plan");
+
+  // If we didn't get a name or id, consider it unusable
+  if (!name && !id) return null;
 
   return {
-    hotels,
-    narrative,
-    notes,
-    use_responder: Boolean(narrative),
-    api_version: apiVersion,
+    id,
+    name,
+    price,
+    currency,
+    address,
+    city,
+    lat,
+    lng,
+    stars,
+    rating,
+    thumbnail,
+    source,
+    raw: x,
   };
+}
+
+function hasHotelSearchFields(x = {}) {
+  return !!(x.check_in || x.checkIn || x.check_in_date || x.dateRange || x.room || x.rate);
+}
+
+function num(v) {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function slug(s) {
+  return String(s)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+}
+
+function joinParts(arr) {
+  return arr.filter(Boolean).join(", ") || null;
 }
 

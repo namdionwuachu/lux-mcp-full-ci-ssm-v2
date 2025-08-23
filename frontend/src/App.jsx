@@ -19,16 +19,49 @@ export default function App() {
     try {
       setLoading(true);
       setErr("");
+
+      // Option A: use planner (free-text query to "plan")
+      if (useResponder) {
+        const query = [
+          `${city}`,
+          `${checkIn} to ${checkOut}`,
+          `2 adults`,
+          `budget £${Number(budget)}/night`,
+          indoorPool ? `prefer indoor pool` : null,
+          `return 3–5 best options`,
+        ]
+          .filter(Boolean)
+          .join(", ");
+
+        const result = await searchHotels({ query });
+        // normalize.js returns { items, meta }; keep your old UI contract:
+        setData({
+          hotels: result.items,
+          narrative: result.meta?.narrative ?? null,
+          notes: result.meta?.notes ?? null,
+          use_responder: true,
+        });
+        return;
+      }
+
+      // Option B: direct structured search (calls "hotel_search")
       const result = await searchHotels({
         city,
-        stay: { check_in: checkIn, check_out: checkOut },
-        budget_max: Number(budget),
-        use_responder: useResponder,
-        preferences: indoorPool ? ["indoor_pool"] : [],
+        check_in: checkIn,
+        check_out: checkOut,
+        adults: 2,
+        currency: "GBP",
       });
-      setData(result); // normalized -> {hotels, narrative, notes, use_responder}
+
+      // Keep your old UI contract
+      setData({
+        hotels: result.items,
+        narrative: result.meta?.narrative ?? null,
+        notes: result.meta?.notes ?? null,
+        use_responder: false,
+      });
     } catch (e) {
-      setErr(e.message || "Search failed");
+      setErr(e?.message || "Search failed");
     } finally {
       setLoading(false);
     }
@@ -66,8 +99,12 @@ export default function App() {
         </label>
 
         <div className="sm:col-span-3">
-          <button onClick={doSearch} className="mt-1 inline-flex items-center justify-center rounded-lg bg-black px-4 py-2 text-white hover:opacity-90">
-            Search
+          <button
+            onClick={doSearch}
+            className="mt-1 inline-flex items-center justify-center rounded-lg bg-black px-4 py-2 text-white hover:opacity-90"
+            disabled={loading}
+          >
+            {loading ? "Searching…" : "Search"}
           </button>
           {!import.meta.env.VITE_LUX_API && (
             <span className="ml-3 text-red-600 text-sm">Set VITE_LUX_API in .env.local</span>

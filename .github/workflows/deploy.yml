@@ -116,11 +116,13 @@ jobs:
             echo "dist_id=${DIST_ID}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build Frontend with injected API URL
+      - name: Build Frontend with injected API URL (MCP)
         working-directory: frontend
         run: |
-          echo "VITE_LUX_API=${{ steps.resolve_api.outputs.api_url }}" > .env
-          npm install # <-- replace `npm ci`
+          BASE="${{ steps.resolve_api.outputs.api_url }}"
+          BASE="${BASE%/}"  # strip any trailing slash
+          echo "VITE_LUX_API=${BASE}/mcp" > .env
+          npm install
           npm run build
 
       - name: Upload SPA to S3
