@@ -31,6 +31,8 @@ class LuxStack(Stack):
             "AMADEUS_SECRET_NAME": os.getenv("AMADEUS_SECRET_NAME", "/lux/amadeus/credentials"),
             "HOTEL_PROVIDER_ORDER": os.getenv("HOTEL_PROVIDER_ORDER", "amadeus"),
             "ALLOWLIST_DOMAINS": os.getenv("ALLOWLIST_DOMAINS", ""),
+            # Planner option: include responder_narrate as the last step
+            "INCLUDE_RESPONDER": os.getenv("INCLUDE_RESPONDER", "true"),
 
             # Amadeus provider knobs
             "AMADEUS_MAX_HOTELS": os.getenv("AMADEUS_MAX_HOTELS", "60"),
