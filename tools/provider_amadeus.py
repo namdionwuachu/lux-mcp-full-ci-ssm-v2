@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 # ---- Config from environment ----
 REGION = os.getenv("AWS_REGION", "us-east-1")
 SECRET_NAME = os.getenv("AMADEUS_SECRET_NAME", "/lux/amadeus/credentials")
+GOOGLE_SECRET_NAME = os.getenv("GOOGLE_SECRET_NAME", "/lux/google/api_key")  # JSON: {"api_key":"..."} or {"maps_api_key":"..."}
 BASE_URL = os.getenv("AMADEUS_BASE_URL", "https://test.api.amadeus.com")
 
 # Central London geocode fallback (used when by-city is sparse)
@@ -63,6 +64,31 @@ def _load_amadeus_secrets() -> Dict[str, str]:
     data = json.loads(sec)
     # Expect: {"client_id": "...", "client_secret": "..."}
     return {"client_id": data["client_id"], "client_secret": data["client_secret"]}
+
+def _get_secret_dict(secret_name: str, region_name: str = None) -> dict:
+    """Fetch a JSON secret from AWS Secrets Manager."""
+    region = region_name or REGION
+    sm = boto3.client("secretsmanager", region_name=region)
+    resp = sm.get_secret_value(SecretId=secret_name)
+    raw = resp.get("SecretString") or (resp.get("SecretBinary") and resp["SecretBinary"].decode("utf-8"))
+    return json.loads(raw) if raw else {}
+
+# If not supplied via env, try AWS Secrets Manager
+if not GOOGLE_PLACES_API_KEY:
+    try:
+        _g = _get_secret_dict(GOOGLE_SECRET_NAME)
+        GOOGLE_PLACES_API_KEY = _g.get("api_key") or _g.get("maps_api_key") or _g.get("GOOGLE_PLACES_API_KEY")
+        if GOOGLE_PLACES_API_KEY:
+            logger.info("Loaded Google API key from Secrets Manager: %s", GOOGLE_SECRET_NAME)
+        else:
+            logger.warning("Google API key not found in secret %s (expected key: 'api_key' or 'maps_api_key').", GOOGLE_SECRET_NAME)
+    except Exception as e:
+        logger.warning("Failed to load Google API key from Secrets Manager %s: %s", GOOGLE_SECRET_NAME, e)
+
+# If photos are enabled but we still have no key, turn photos off to avoid hard errors
+if ENABLE_PLACES_PHOTOS and not GOOGLE_PLACES_API_KEY:
+    logger.warning("ENABLE_PLACES_PHOTOS is true but no Google API key available; disabling photos.")
+    ENABLE_PLACES_PHOTOS = False
 
 
 # ---- SDK client (if available) ----
@@ -213,20 +239,21 @@ def _sleep_with_retry_after(resp, attempt, base=1.0):
     logger.warning("429/5xx: backing off for %.2fs (attempt %d)", wait, attempt)
     time.sleep(wait)
 
+
 def _throttled_get(url: str, headers: Dict[str, str], params: Dict[str, Any]) -> requests.Response:
     """GET with retry on 429/5xx and Retry-After support."""
+    sess = _http()
     for attempt in range(MAX_RETRIES):
-        resp = SESSION.get(url, headers=headers, params=params, timeout=30)
+        resp = sess.get(url, headers=headers, params=params, timeout=30)
         if resp.status_code < 400:
             return resp
         if resp.status_code in (429, 500, 502, 503, 504):
             _sleep_with_retry_after(resp, attempt, base=BASE_BACKOFF)
             continue
-        # hard fail for other 4xx
         resp.raise_for_status()
-    # final attempt
     resp.raise_for_status()
     return resp  # pragma: no cover
+
 
 def fetch_offers_chunked(access_token: str, hotel_ids: List[str], common_params: Dict[str, Any]) -> List[Dict[str, Any]]:
     """

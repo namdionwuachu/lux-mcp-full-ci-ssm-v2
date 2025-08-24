@@ -2,6 +2,8 @@
 const baseRaw = import.meta.env.VITE_LUX_API || "";
 const base = baseRaw.replace(/\/+$/, "") + "/mcp";
 
+console.log("[Lux] VITE_LUX_API =", baseRaw, "→ final MCP URL =", base);
+
 function rpc(method, params) {
   return { jsonrpc: "2.0", id: crypto.randomUUID(), method, params };
 }
