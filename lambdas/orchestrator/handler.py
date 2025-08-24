@@ -20,18 +20,21 @@ mcp.register("budget_filter", lambda t: budget_filter_run(t))
 
 # ---- CORS ----
 CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",  # tighten later if needed
+    "Access-Control-Allow-Origin": "ALLOW_ORIGIN",  # tighten 
     "Access-Control-Allow-Headers": "Content-Type,Authorization,x-correlation-id",
     "Access-Control-Allow-Methods": "OPTIONS,POST",
+    "Access-Control-Max-Age": "600",
     "Vary": "Origin",
+    "Content-Type": "application/json",
 }
 
-def _resp(code: int, obj: Dict[str, Any]) -> Dict[str, Any]:
+def _resp(code: int, obj: Dict[str, Any] | None = None) -> Dict[str, Any]:
     return {
         "statusCode": code,
-        "headers": {"Content-Type": "application/json", **CORS_HEADERS},
-        "body": json.dumps(obj),
+        "headers": CORS_HEADERS,                # <-- always include
+        "body": "" if obj is None else json.dumps(obj),
     }
+
 
 def _http_method(event: Dict[str, Any]) -> str:
     m = event.get("requestContext", {}).get("http", {}).get("method")
@@ -60,10 +63,13 @@ def _wrap_ok(rid: Any, payload: Any) -> Dict[str, Any]:
 def lambda_handler(event, context):
     method = _http_method(event)
 
+
     # CORS preflight
     if method == "OPTIONS":
-        return _resp(200, {"ok": True})
-
+    # No body for preflight; headers do the work
+    return _resp(204)  # <- empty body, same CORS headers
+    
+    
     if method != "POST":
         return _resp(405, {"jsonrpc":"2.0","id":None,"error":{"code":-32600,"message":"Invalid Request"}})
 
