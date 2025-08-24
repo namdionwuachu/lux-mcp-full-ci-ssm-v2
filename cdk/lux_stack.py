@@ -38,7 +38,10 @@ class LuxStack(Stack):
             "AMADEUS_MAX_HOTELS": os.getenv("AMADEUS_MAX_HOTELS", "60"),
             "AMADEUS_TARGET_RESULTS": os.getenv("AMADEUS_TARGET_RESULTS", "30"),
             "AMADEUS_TIME_BUDGET_SEC": os.getenv("AMADEUS_TIME_BUDGET_SEC", "17"),
-            "AMADEUS_OFFERS_CHUNK_SIZE": os.getenv("AMADEUS_OFFERS_CHUNK_SIZE", "20"),
+            "AMADEUS_OFFERS_CHUNK_SIZE": os.getenv("AMADEUS_OFFERS_CHUNK_SIZE", "12"), # lowered from 20 → 12
+            "AMADEUS_INTER_CHUNK_SLEEP": os.getenv("AMADEUS_INTER_CHUNK_SLEEP", "0.15"),
+            "AMADEUS_MAX_RETRIES": os.getenv("AMADEUS_MAX_RETRIES", "5"),
+            "AMADEUS_BASE_BACKOFF": os.getenv("AMADEUS_BASE_BACKOFF", "1.0"),
 
             # Google Places (consistent pattern: pass secret NAME, not key)
             "GOOGLE_PLACES_SECRET_NAME": os.getenv("GOOGLE_PLACES_SECRET_NAME", "/lux/google/places_api_key"),
