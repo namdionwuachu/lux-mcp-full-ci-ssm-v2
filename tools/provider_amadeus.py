@@ -6,6 +6,9 @@ import logging
 from datetime import datetime, date as _date
 from typing import List, Dict, Any, Optional, TypedDict, NotRequired
 import urllib.parse
+import random
+import requests  # you already import inside _http(), but import here too for typing and direct use
+
 
 import boto3
 
@@ -22,8 +25,12 @@ FALLBACK_LON = float(os.getenv("AMADEUS_FALLBACK_LON", "-0.1278"))
 FALLBACK_RADIUS_KM = int(os.getenv("AMADEUS_FALLBACK_RADIUS_KM", "20"))
 
 # How many hotelIds per request to the offers endpoint (avoid very long URLs)
-OFFERS_CHUNK_SIZE = int(os.getenv("AMADEUS_OFFERS_CHUNK_SIZE", "20"))
+OFFERS_CHUNK_SIZE = int(os.getenv("AMADEUS_OFFERS_CHUNK_SIZE", "12"))
+INTER_CHUNK_SLEEP = float(os.getenv("AMADEUS_INTER_CHUNK_SLEEP", "0.15"))  # ~150ms
+MAX_RETRIES = int(os.getenv("AMADEUS_MAX_RETRIES", "5"))
 MAX_HOTELS = int(os.getenv("AMADEUS_MAX_HOTELS", "60"))             # cap hotelIds breadth (3 chunks of 20)
+BASE_BACKOFF = float(os.getenv("AMADEUS_BASE_BACKOFF", "1.0"))  # seconds
+
 TARGET_RESULTS = int(os.getenv("AMADEUS_TARGET_RESULTS", "30"))     # stop when we’ve got this many hotels-with-offers
 TIME_BUDGET_SEC = int(os.getenv("AMADEUS_TIME_BUDGET_SEC", "17"))   # finish before Lambda’s 20s
 
@@ -114,23 +121,54 @@ def _get_oauth_token() -> str:
     _token_cache["expires_at"] = now + max(60, expires_in - 60)
     return token
 
-
 def _rest_get(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    token = _get_oauth_token()
+    """
+    GET with retries/backoff (429/5xx) and Retry-After support.
+    Reuses the global session from _http() and the cached OAuth token.
+    """
     url = f"{BASE_URL}{path}"
-    headers = {"Authorization": f"Bearer {token}"}
-    logger.info({"stage": "amadeus_rest_get", "url": url, "params": params})
-    r = _http().get(url, headers=headers, params=params, timeout=30)
-    if r.status_code >= 400:
-        # Log full body so we can see Amadeus error codes/titles
+    for attempt in range(MAX_RETRIES):
+        token = _get_oauth_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        logger.info({"stage": "amadeus_rest_get", "url": url, "params": params, "attempt": attempt + 1})
+        r = _http().get(url, headers=headers, params=params, timeout=30)
+
+        # Success
+        if r.status_code < 400:
+            logger.info({"stage": "amadeus_rest_status", "status": r.status_code})
+            return r.json()
+
+        # Retryable
+        if r.status_code in (429, 500, 502, 503, 504, 408):
+            logger.warning({
+                "stage": "amadeus_retry",
+                "status": r.status_code,
+                "retry_after": r.headers.get("Retry-After"),
+                "x_rl_limit": r.headers.get("X-RateLimit-Limit"),
+                "x_rl_remaining": r.headers.get("X-RateLimit-Remaining"),
+                "attempt": attempt + 1,
+            })
+            _sleep_with_retry_after(r, attempt, base=BASE_BACKOFF)
+            continue
+
+
+        # Non-retryable → raise with body logged
         try:
             body = r.text
         except Exception:
             body = "<no body available>"
         logger.error({"stage": "amadeus_rest_error", "status": r.status_code, "url": url, "body": body})
         r.raise_for_status()
-    logger.info({"stage": "amadeus_rest_status", "status": r.status_code})
-    return r.json()
+
+    # Exhausted retries
+    r = _http().get(url, headers={"Authorization": f"Bearer {_get_oauth_token()}"}, params=params, timeout=30)
+    try:
+        body = r.text
+    except Exception:
+        body = "<no body available>"
+    logger.error({"stage": "amadeus_rest_gave_up", "status": r.status_code, "url": url, "body": body})
+    r.raise_for_status()
+    return {}  # unreachable
 
 def _resolve_city(name: str, country_code: Optional[str] = None) -> tuple[Optional[str], Optional[tuple[float, float]]]:
     """
@@ -161,6 +199,62 @@ def _resolve_city(name: str, country_code: Optional[str] = None) -> tuple[Option
         logger.warning({"stage": "amadeus_city_resolve_failed", "error": str(e), "name": name, "cc": country_code})
         return None, None
 
+def _sleep_with_retry_after(resp, attempt, base=1.0):
+    # Honor Retry-After when present; otherwise exponential backoff + jitter
+    ra = resp.headers.get("Retry-After")
+    if ra:
+        try:
+            wait = float(ra)
+        except ValueError:
+            wait = base * (2 ** attempt)
+    else:
+        wait = base * (2 ** attempt)
+    wait += random.uniform(0, 0.25)  # jitter
+    logger.warning("429/5xx: backing off for %.2fs (attempt %d)", wait, attempt)
+    time.sleep(wait)
+
+def _throttled_get(url: str, headers: Dict[str, str], params: Dict[str, Any]) -> requests.Response:
+    """GET with retry on 429/5xx and Retry-After support."""
+    for attempt in range(MAX_RETRIES):
+        resp = SESSION.get(url, headers=headers, params=params, timeout=30)
+        if resp.status_code < 400:
+            return resp
+        if resp.status_code in (429, 500, 502, 503, 504):
+            _sleep_with_retry_after(resp, attempt, base=BASE_BACKOFF)
+            continue
+        # hard fail for other 4xx
+        resp.raise_for_status()
+    # final attempt
+    resp.raise_for_status()
+    return resp  # pragma: no cover
+
+def fetch_offers_chunked(access_token: str, hotel_ids: List[str], common_params: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Calls /v3/shopping/hotel-offers in chunks of hotelIds.
+    common_params should include: checkInDate, checkOutDate, adults, currency, etc.
+    """
+    base_url = os.getenv("AMADEUS_BASE_URL", "https://test.api.amadeus.com")
+    url = f"{base_url}/v3/shopping/hotel-offers"
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    all_offers = []
+    for i in range(0, len(hotel_ids), OFFERS_CHUNK_SIZE):
+        chunk = hotel_ids[i : i + OFFERS_CHUNK_SIZE]
+        params = dict(common_params)
+        params["hotelIds"] = ",".join(chunk)
+
+        # Light client-side throttle to avoid bursts
+        time.sleep(float(os.getenv("AMADEUS_INTER_CHUNK_SLEEP", "0.15")))  # ~150ms
+
+        resp = _throttled_get(url, headers, params)
+        data = resp.json()
+        # Merge results defensively
+        if "data" in data:
+            if isinstance(data["data"], list):
+                all_offers.extend(data["data"])
+            else:
+                all_offers.append(data["data"])
+    return all_offers
 
 
 def _nights(ci: Optional[str], co: Optional[str]) -> int:
@@ -271,7 +365,12 @@ def _offers_by_hotel_ids_rest(
             params["roomQuantity"] = str(params["roomQuantity"])
 
         params["hotelIds"] = chunk_ids
-
+        
+        # ✅ Gentle throttle to avoid bursts/rate limits (add this here)
+        time.sleep(INTER_CHUNK_SLEEP)
+        
+        
+        # Make the request (ideally your _rest_get now has retry/backoff)
         resp = _rest_get("/v3/shopping/hotel-offers", params)
         part = resp.get("data", []) or []
         logger.info({"stage": "amadeus_offers_chunk", "chunk_size": len(chunk_ids.split(",")), "returned": len(part)})
