@@ -10,7 +10,7 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  LUX_API_PARAM_NAME: /lux/frontend/VITE_LUX_API   # SSM param to store API URL
+  LUX_API_PARAM_NAME: /lux/frontend/VITE_LUX_API   # SSM param to store base API URL
 
 jobs:
   deploy:
@@ -68,13 +68,14 @@ jobs:
         working-directory: cdk
         run: cdk deploy LuxFrontendStack --require-approval never --app "python app.py"
 
-      # Pull API URL from SSM (fallback to CFN output on first run) and persist to SSM
-      - name: Resolve API URL via SSM (fallback to CFN) and persist
+      # Pull API URL from SSM (fallback to CFN output on first run), persist base + /mcp to SSM, and expose outputs
+      - name: Resolve API URL via SSM (fallback to CFN) and persist (base + /mcp)
         id: resolve_api
         shell: bash
         run: |
           set -euo pipefail
 
+          # 1) Try SSM first (base URL)
           API_URL_SSM="$(aws ssm get-parameter \
             --name "${LUX_API_PARAM_NAME}" \
             --with-decryption \
@@ -85,12 +86,14 @@ jobs:
             API_URL="${API_URL_SSM}"
             echo "Using API URL from SSM."
           else
+            # 2) Fallback to CloudFormation output
             API_URL="$(aws cloudformation describe-stacks \
               --stack-name LuxStack \
               --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" \
               --output text)"
             echo "Using API URL from CloudFormation: ${API_URL}"
 
+            # Persist base API URL to SSM
             if aws ssm get-parameter --name "${LUX_API_PARAM_NAME}" >/dev/null 2>&1; then
               aws ssm put-parameter --name "${LUX_API_PARAM_NAME}" --type String --value "${API_URL}" --overwrite
             else
@@ -98,6 +101,19 @@ jobs:
             fi
           fi
 
+          # Compute the /mcp URL safely (strip trailing slash on base)
+          API_URL_TRIMMED="${API_URL%/}"
+          API_URL_MCP="${API_URL_TRIMMED}/mcp"
+
+          # Persist MCP URL to SSM
+          MCP_PARAM_NAME="/lux/frontend/VITE_LUX_API_MCP"
+          if aws ssm get-parameter --name "${MCP_PARAM_NAME}" >/dev/null 2>&1; then
+            aws ssm put-parameter --name "${MCP_PARAM_NAME}" --type String --value "${API_URL_MCP}" --overwrite
+          else
+            aws ssm put-parameter --name "${MCP_PARAM_NAME}" --type String --value "${API_URL_MCP}"
+          fi
+
+          # Get frontend outputs
           BUCKET="$(aws cloudformation describe-stacks \
             --stack-name LuxFrontendStack \
             --query "Stacks[0].Outputs[?OutputKey=='FrontendBucketName'].OutputValue" \
@@ -109,22 +125,21 @@ jobs:
             --output text)"
 
           {
-            echo "api_url=${API_URL}"
+            echo "api_url=${API_URL_TRIMMED}"
+            echo "api_url_mcp=${API_URL_MCP}"
             echo "bucket=${BUCKET}"
             echo "dist_id=${DIST_ID}"
           } >> "$GITHUB_OUTPUT"
 
+          echo "Resolved API URL (base): ${API_URL_TRIMMED}"
+          echo "Resolved API URL (MCP):  ${API_URL_MCP}"
+
       - name: Build Frontend with injected API URL (MCP)
         working-directory: frontend
         env:
-          VITE_LUX_API: ${{ steps.resolve_api.outputs.api_url }}/mcp
+          VITE_LUX_API: ${{ steps.resolve_api.outputs.api_url_mcp }}
         run: |
-          BASE="${{ steps.resolve_api.outputs.api_url }}"
-          BASE="${BASE%/}"  # strip any trailing slash
-          
-          # Show what we're building with
-          echo  "Building frontend with VITE_LUX_API=${BASE}/mcp"
-
+          echo  "Building frontend with VITE_LUX_API=${VITE_LUX_API}"
           npm install
           npm run build
 
@@ -133,5 +148,4 @@ jobs:
 
       - name: Invalidate CloudFront
         run: aws cloudfront create-invalidation --distribution-id "${{ steps.resolve_api.outputs.dist_id }}" --paths "/*"
-
 
