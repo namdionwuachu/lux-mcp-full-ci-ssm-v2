@@ -1,7 +1,5 @@
 // frontend/src/api/rpc.js
-
 const baseRaw = import.meta.env.VITE_LUX_API || "";
-// Always normalize so it ends with /mcp
 const base = baseRaw.replace(/\/+$/, "") + "/mcp";
 
 function rpc(method, params) {
@@ -9,8 +7,7 @@ function rpc(method, params) {
 }
 
 export async function rpcCall(method, params) {
-  const url = base;
-  const res = await fetch(url, {
+  const res = await fetch(base, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -18,9 +15,20 @@ export async function rpcCall(method, params) {
     },
     body: JSON.stringify(rpc(method, params)),
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${JSON.stringify(data)}`);
-  if (data.error) throw new Error(`${data.error.code}: ${data.error.message}`);
+
+  // Read raw text so we can log helpful errors
+  const text = await res.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch {}
+
+  if (!res.ok) {
+    console.error("MCP HTTP error:", res.status, text);
+    throw new Error(`HTTP ${res.status}: ${text || "(no body)"}`);
+  }
+  if (data.error) {
+    console.error("MCP JSON-RPC error:", data.error);
+    throw new Error(`${data.error.code}: ${data.error.message}`);
+  }
   return data.result ?? data;
 }
 
