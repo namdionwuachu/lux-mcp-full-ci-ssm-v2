@@ -3,10 +3,16 @@
 from typing import Dict, Any, List
 from datetime import date
 from shared.models import Stay
-# ❌ from tools.web_search import search_hotels
-# ✅ use the real provider
 from tools.provider_amadeus import search_hotels
 from tools.hotels_filter import filter_four_star_with_gym
+
+# ⬇️ NEW: Google Places enrichment
+import os
+try:
+    from places_enrichment import enrich_hotels_with_places  # file sits next to this one
+except Exception:
+    enrich_hotels_with_places = None  # safe fallback if module missing
+
 
 def _nights(ci: str, co: str) -> int:
     try:
@@ -56,6 +62,18 @@ def run(task: Dict[str, Any]) -> Dict[str, Any]:
         min_stars=4.0,
     )
     out = [_normalize_hotel(h, nights) for h in hotels]
+
+    # ⬇️ NEW: Enrich with Google Places (URL + photos + coords fallback)
+    if (
+        os.getenv("ENABLE_PLACES_PHOTOS", "0").lower() in ("1", "true", "yes")
+        and callable(enrich_hotels_with_places)
+    ):
+        try:
+            out = enrich_hotels_with_places(out, city_code=getattr(stay, "city_code", None))
+        except Exception:
+            # keep results even if enrichment fails
+            pass
+
     return {"status": "ok", "hotels": out}
 
 

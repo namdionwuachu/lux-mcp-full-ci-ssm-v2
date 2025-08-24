@@ -1,8 +1,9 @@
 # orchestrator/mcp_server.py
-import os, json, boto3, traceback
+import os, json, boto3, traceback, re
 from typing import Dict, Any
+from datetime import datetime
 
-from agents.planner import plan as planner_agent_plan  # your updated robust planner
+from agents.planner import plan as planner_agent_plan  # robust planner
 
 LAM = boto3.client("lambda")
 HOTEL_FN  = os.getenv("HOTEL_FN")   # arn or name of your hotel_agent lambda
@@ -45,7 +46,7 @@ def _invoke(fn: str, payload: dict) -> dict:
 def _initialize(_req):
     return {
         "capabilities": {"tools": {"listChanged": False}},
-        "serverInfo": {"name": "lux-mcp-server", "version": "0.1.1"},
+        "serverInfo": {"name": "lux-mcp-server", "version": "0.1.2"},
     }
 
 
@@ -111,14 +112,24 @@ def _tools_list(_req):
                 "description": "Alias of planner_plan",
                 "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}}},
             },
+            {
+                "name": "planner_execute",
+                "description": "Plan + search + filter + (optionally) narrate in one call",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "stay": {"type": "object"},
+                        "top_n": {"type": "number"}
+                    }
+                },
+            },
         ]
     }
 
 
 def _planner_handler(args: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Thin adapter around agents.planner.plan. Always returns a stable shape.
-    """
+    """Thin adapter around agents.planner.plan. Always returns a stable shape."""
     q = (args.get("query") or "") if isinstance(args, dict) else ""
     try:
         out = planner_agent_plan(q) if isinstance(q, str) else planner_agent_plan(query=q)
@@ -126,10 +137,95 @@ def _planner_handler(args: Dict[str, Any]) -> Dict[str, Any]:
             out = {}
     except Exception as e:
         out = {"agents": ["hotel_search", "budget_filter"], "notes": f"fallback plan (planner exception: {e})"}
-
     agents = out.get("agents") or ["hotel_search", "budget_filter"]
     notes = out.get("notes") or "auto plan"
     return {"status": "ok", "agents": agents, "notes": notes}
+
+
+def _parse_stay_from_query(q: str) -> Dict[str, Any]:
+    """Light parser so execute works with just a query string."""
+    def _dates(s):
+        m = re.search(r'(\d{1,2})\s*[–-]\s*(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})', s)
+        if m:
+            d1, d2, mon, yr = m.groups()
+            ci = datetime.strptime(f"{d1} {mon} {yr}", "%d %b %Y").strftime("%Y-%m-%d")
+            co = datetime.strptime(f"{d2} {mon} {yr}", "%d %b %Y").strftime("%Y-%m-%d")
+            return ci, co
+        m = re.search(r'(\d{4})-(\d{2})-(\d{2}).*?(\d{4})-(\d{2})-(\d{2})', s)
+        if m:
+            y1, m1, d1, y2, m2, d2 = m.groups()
+            return f"{y1}-{m1}-{d1}", f"{y2}-{m2}-{d2}"
+        return None, None
+
+    ci, co = _dates(q or "")
+    m_city = re.search(r'\(([A-Z]{3})\)', q or "")
+    m_adults = re.search(r'(\d+)\s+adults?', q or "", re.I)
+    m_price = re.search(r'under\s*£?\s*(\d+)', q or "", re.I)
+    wants_pool = bool(re.search(r'indoor\s+pool', q or "", re.I))
+    return {
+        "check_in": ci, "check_out": co,
+        "city_code": m_city.group(1) if m_city else None,
+        "adults": int(m_adults.group(1)) if m_adults else 2,
+        "wants_indoor_pool": wants_pool,
+        "max_price_gbp": float(m_price.group(1)) if m_price else None,
+    }
+
+
+def _planner_execute_handler(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Run planner -> hotel_search -> budget_filter -> (optional) responder, in one call."""
+    query = (args or {}).get("query", "") or ""
+    stay = (args or {}).get("stay") or _parse_stay_from_query(query)
+    if not (stay.get("check_in") and stay.get("check_out") and stay.get("city_code")):
+        return {"status":"error","error":"need stay {check_in, check_out, city_code} or a parseable query"}
+
+    # planner (for notes / agent order)
+    try:
+        plan_out = _planner_handler({"query": query})
+        notes = plan_out.get("notes") or ""
+        agents = plan_out.get("agents") or ["hotel_search","budget_filter"]
+    except Exception:
+        notes, agents = "", ["hotel_search","budget_filter"]
+
+    # hotel search
+    if not HOTEL_FN:
+        return {"status":"error","error":"HOTEL_FN env not set"}
+    hs = _invoke(HOTEL_FN, {"stay": stay, "task_id": args.get("request_id")})
+    hotels = (((hs or {}).get("hotels") or {}).get("hotels")) or []
+
+    # budget filter
+    if not BUDGET_FN:
+        return {"status":"error","error":"BUDGET_FN env not set"}
+    bf_in = {
+        "hotels": hotels,
+        "max_price_gbp": stay.get("max_price_gbp"),
+        "check_in": stay.get("check_in"),
+        "check_out": stay.get("check_out"),
+        "top_n": int(args.get("top_n", 5) or 5),
+        "task_id": args.get("request_id"),
+    }
+    bf = _invoke(BUDGET_FN, bf_in) or {}
+    top = bf.get("top") or bf.get("ranked") or []
+    candidates = bf.get("candidates") or top
+    meta = bf.get("meta") or {"total_in": len(hotels)}
+
+    # responder (optional)
+    narrative = None
+    try:
+        from agents.responder import narrate
+        narrative = narrate(top=top, candidates=candidates, context={"stay": stay, "notes": notes})
+    except Exception:
+        pass
+
+    return {
+        "status": "ok",
+        "notes": notes,
+        "agents": agents,
+        "stay": stay,
+        "top": top,
+        "candidates": candidates,
+        "narrative": narrative,
+        "meta": meta,
+    }
 
 
 def _tools_call(req):
@@ -169,6 +265,9 @@ def _tools_call(req):
 
         elif name in ("planner_plan", "plan"):
             out = _planner_handler(args)
+
+        elif name == "planner_execute":
+            out = _planner_execute_handler(args)
 
         else:
             return {"content": [{"type": "text", "text": f"unknown tool: {name}"}], "isError": True}

@@ -42,7 +42,7 @@ class LuxStack(Stack):
 
             # Google Places (consistent pattern: pass secret NAME, not key)
             "GOOGLE_PLACES_SECRET_NAME": os.getenv("GOOGLE_PLACES_SECRET_NAME", "/lux/google/places_api_key"),
-            "ENABLE_PLACES_PHOTOS": os.getenv("ENABLE_PLACES_PHOTOS", "0"),
+            "ENABLE_PLACES_PHOTOS": os.getenv("ENABLE_PLACES_PHOTOS", "1"),
             "MAX_PHOTOS_PER_HOTEL": os.getenv("MAX_PHOTOS_PER_HOTEL", "4"),
         }
 
