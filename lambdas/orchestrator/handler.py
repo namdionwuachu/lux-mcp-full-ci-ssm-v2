@@ -1,7 +1,8 @@
-"""MCP JSON-RPC entrypoint: tools/call only."""
+# MCP JSON-RPC entrypoint: tools/call (with tools/list discovery).
 import json
 import logging
-from typing import Any, Dict
+import os
+from typing import Any, Dict, Optional
 
 from mcp import MCP
 from agents import planner
@@ -18,27 +19,33 @@ mcp = MCP()
 mcp.register("hotel_search", lambda t: hotel_search_run(t))
 mcp.register("budget_filter", lambda t: budget_filter_run(t))
 
-# ---- CORS ----
-CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "ALLOW_ORIGIN",  # tighten 
+# ---- CORS (env-tunable) ----
+# If you need cookies: set ALLOW_ORIGIN=https://diemlairojbig.cloudfront.net
+# and add "Access-Control-Allow-Credentials": "true" below (and use credentials:"include" on the client).
+ALLOW_ORIGIN = os.getenv("ALLOW_ORIGIN", "*")
+
+CORS_HEADERS: Dict[str, str] = {
+    "Access-Control-Allow-Origin": ALLOW_ORIGIN,
     "Access-Control-Allow-Headers": "Content-Type,Authorization,x-correlation-id",
     "Access-Control-Allow-Methods": "OPTIONS,POST",
     "Access-Control-Max-Age": "600",
     "Vary": "Origin",
     "Content-Type": "application/json",
 }
+# Uncomment if you use credentials (cookies):
+# CORS_HEADERS["Access-Control-Allow-Credentials"] = "true"
 
-def _resp(code: int, obj: Dict[str, Any] | None = None) -> Dict[str, Any]:
+def _resp(code: int, obj: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return {
         "statusCode": code,
-        "headers": CORS_HEADERS,                # <-- always include
+        "headers": CORS_HEADERS,  # always include CORS
         "body": "" if obj is None else json.dumps(obj),
     }
 
-
 def _http_method(event: Dict[str, Any]) -> str:
-    m = event.get("requestContext", {}).get("http", {}).get("method")
-    return m or event.get("httpMethod") or "POST"
+    http_v2 = event.get("requestContext", {}).get("http", {})
+    m = http_v2.get("method") or event.get("httpMethod")
+    return m or "POST"
 
 def _parse_body(event: Dict[str, Any]) -> Dict[str, Any]:
     body = event.get("body")
@@ -63,38 +70,62 @@ def _wrap_ok(rid: Any, payload: Any) -> Dict[str, Any]:
 def lambda_handler(event, context):
     method = _http_method(event)
 
-
-    # CORS preflight
+    # ---- CORS preflight
     if method == "OPTIONS":
-    # No body for preflight; headers do the work
-    return _resp(204)  # <- empty body, same CORS headers
-    
-    
-    if method != "POST":
-        return _resp(405, {"jsonrpc":"2.0","id":None,"error":{"code":-32600,"message":"Invalid Request"}})
+        # Empty body; headers carry CORS info
+        return _resp(204)
 
-    # Parse JSON
+    # ---- Method guard
+    if method != "POST":
+        return _resp(405, {
+            "jsonrpc": "2.0", "id": None,
+            "error": {"code": -32600, "message": "Invalid Request"}
+        })
+
+    # ---- Parse JSON body
     try:
         body = _parse_body(event)
     except Exception as e:
-        return _resp(400, {"jsonrpc":"2.0","id":None,"error":{"code":-32700,"message":f"Parse error: {e}"}})
+        return _resp(400, {
+            "jsonrpc": "2.0", "id": None,
+            "error": {"code": -32700, "message": f"Parse error: {e}"}
+        })
 
     rid = body.get("id")
     if body.get("jsonrpc") != "2.0":
-        return _resp(400, {"jsonrpc":"2.0","id":rid,"error":{"code":-32600,"message":"Invalid Request"}})
+        return _resp(400, {
+            "jsonrpc": "2.0", "id": rid,
+            "error": {"code": -32600, "message": "Invalid Request"}
+        })
 
     if body.get("method") != "tools/call":
-        return _resp(400, {"jsonrpc":"2.0","id":rid,"error":{"code":-32601,"message":"Method not found"}})
+        return _resp(400, {
+            "jsonrpc": "2.0", "id": rid,
+            "error": {"code": -32601, "message": "Method not found"}
+        })
 
     params = body.get("params") or {}
     name = params.get("name")
     arguments = params.get("arguments") or {}
 
     if not name:
-        return _resp(400, {"jsonrpc":"2.0","id":rid,"error":{"code":-32602,"message":"Missing params.name"}})
+        return _resp(400, {
+            "jsonrpc": "2.0", "id": rid,
+            "error": {"code": -32602, "message": "Missing params.name"}
+        })
 
     try:
-        # ---- Dispatch supported tools ----
+        # ---- Tool discovery (optional but useful)
+        if name == "tools/list":
+            tools = [
+                {"name": "plan", "summary": "Plan a hotel search from natural language."},
+                {"name": "hotel_search", "summary": "Search hotels by city/date/adults, indoor pool, max price."},
+                {"name": "budget_filter", "summary": "Filter and rank hotels by price and dates."},
+                {"name": "responder_narrate", "summary": "Generate a short narrative of top results."},
+            ]
+            return _resp(200, _wrap_ok(rid, {"tools": tools}))
+
+        # ---- Dispatch supported tools
         if name == "plan":
             q = arguments.get("query") or ""
             payload = planner.plan(q)
@@ -121,10 +152,16 @@ def lambda_handler(event, context):
             payload = {"text": narrate(top, candidates, context=context)}
 
         else:
-            return _resp(400, {"jsonrpc":"2.0","id":rid,"error":{"code":-32601,"message":f"Unknown tool: {name}"}})
+            return _resp(400, {
+                "jsonrpc": "2.0", "id": rid,
+                "error": {"code": -32601, "message": f"Unknown tool: {name}"}
+            })
 
         return _resp(200, _wrap_ok(rid, payload))
 
     except Exception as e:
         logger.exception("tools/call failed")
-        return _resp(500, {"jsonrpc":"2.0","id":rid,"error":{"code":-32000,"message":str(e)}})
+        return _resp(500, {
+            "jsonrpc": "2.0", "id": rid,
+            "error": {"code": -32000, "message": str(e)}
+        })
