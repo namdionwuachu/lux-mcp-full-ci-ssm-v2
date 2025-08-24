@@ -50,11 +50,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-
       - name: CDK Synth (debug)
         working-directory: cdk
         run: cdk synth --app "python app.py"
-
 
       - name: CDK Bootstrap
         working-directory: cdk
@@ -120,7 +118,7 @@ jobs:
         working-directory: frontend
         env:
           VITE_LUX_API: ${{ steps.resolve_api.outputs.api_url }}/mcp
-	run: |
+        run: |
           BASE="${{ steps.resolve_api.outputs.api_url }}"
           BASE="${BASE%/}"  # strip any trailing slash
           
@@ -135,4 +133,5 @@ jobs:
 
       - name: Invalidate CloudFront
         run: aws cloudfront create-invalidation --distribution-id "${{ steps.resolve_api.outputs.dist_id }}" --paths "/*"
+
 
