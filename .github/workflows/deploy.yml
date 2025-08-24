@@ -118,10 +118,15 @@ jobs:
 
       - name: Build Frontend with injected API URL (MCP)
         working-directory: frontend
-        run: |
+        env:
+          VITE_LUX_API: ${{ steps.resolve_api.outputs.api_url }}/mcp
+	run: |
           BASE="${{ steps.resolve_api.outputs.api_url }}"
           BASE="${BASE%/}"  # strip any trailing slash
-          echo "VITE_LUX_API=${BASE}/mcp" > .env
+          
+          # Show what we're building with
+          echo  "Building frontend with VITE_LUX_API=${BASE}/mcp"
+
           npm install
           npm run build
 
