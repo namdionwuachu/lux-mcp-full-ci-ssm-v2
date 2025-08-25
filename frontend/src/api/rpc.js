@@ -1,79 +1,105 @@
 // src/api/rpc.js
 // JSON‑RPC client for your MCP Lambda
 
-// Build the final endpoint:
-// - If VITE_LUX_API already ends with /mcp, use it as-is
-// - Otherwise, append /mcp
+// Resolve final MCP endpoint:
+// - If VITE_LUX_API already ends with /mcp, use it (trim trailing slash)
+// - Else, append /mcp to whatever is provided (origin or base URL)
 const baseRaw = import.meta.env.VITE_LUX_API || "";
-const base = /\/mcp\/?$/.test(baseRaw) ? baseRaw.replace(/\/+$/, "") : (baseRaw.replace(/\/+$/, "") + "/mcp");
+const MCP_BASE = /\/mcp\/?$/.test(baseRaw)
+  ? baseRaw.replace(/\/+$/, "")
+  : (baseRaw.replace(/\/+$/, "") + "/mcp");
 
-console.log("[Lux] VITE_LUX_API =", baseRaw, "→ final MCP URL =", base);
+if (import.meta.env?.DEV) {
+  console.log("[Lux] VITE_LUX_API =", baseRaw, "→ MCP =", MCP_BASE);
+}
 
-// Low-level JSON-RPC envelope
+// ---- Low-level helpers ----
 function rpc(method, params) {
   return { jsonrpc: "2.0", id: crypto.randomUUID(), method, params };
 }
 
-// POST helper that always parses JSON (or throws with raw text for debugging)
-async function postJSON(url, payload) {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-correlation-id": crypto.randomUUID(),
-    },
-    body: JSON.stringify(payload),
-  });
+async function postJSON(url, payload, { timeoutMs = 20000, headers = {} } = {}) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(new Error("Request timed out")), timeoutMs);
 
-  const text = await res.text();
-  let data;
   try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    throw new Error(`Non-JSON response (${res.status}): ${text.slice(0, 200)}`);
-  }
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-correlation-id": crypto.randomUUID(),
+        ...headers,
+      },
+      body: JSON.stringify(payload),
+      signal: ac.signal,
+    });
 
-  if (!res.ok) {
-    const msg = data?.error?.message || text || `HTTP ${res.status}`;
-    console.error("MCP HTTP error:", res.status, msg);
-    throw new Error(msg);
-  }
+    const text = await res.text();
+    let data;
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      throw new Error(`Non-JSON response (${res.status}): ${text.slice(0, 200)}`);
+    }
 
-  return data;
+    if (!res.ok) {
+      const msg = data?.error?.message || text || `HTTP ${res.status}`;
+      throw new Error(msg);
+    }
+
+    return data;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-/**
- * Generic JSON-RPC call — for advanced cases.
- * NOTE: This sends your method verb directly. For MCP tools, prefer callTool().
- */
-export async function rpcCall(method, params) {
-  const payload = rpc(method, params);
-  const data = await postJSON(base, payload);
-  // If the server replied with classic JSON-RPC result, return it;
-  // otherwise return the whole parsed body.
-  return data.result ?? data;
-}
+// ---- Public API ----
 
 /**
- * Call an MCP tool ("plan" | "hotel_search" | "budget_filter" | "responder_narrate")
- * Wraps the JSON-RPC envelope as the Lambda expects: method "tools/call",
- * params: { name, arguments }
+ * Call an MCP tool (normal path).
+ * Wraps the JSON-RPC envelope that the Lambda expects:
+ *   method: "tools/call"
+ *   params: { name, arguments }
+ *
+ * Example:
+ *   await callTool("hotel_search", { stay: {...}, currency: "GBP" })
+ *   await callTool("plan", { query: "3 nights in PAR" })
  */
-export async function callTool(name, args = {}) {
+export async function callTool(name, args = {}, options = {}) {
   const payload = rpc("tools/call", { name, arguments: args });
-  const data = await postJSON(base, payload);
+  const data = await postJSON(MCP_BASE, payload, options);
 
   if (data?.error) {
     const { code, message } = data.error;
-    console.error("MCP JSON-RPC error:", code, message);
     throw new Error(`MCP ${name} error ${code}: ${message}`);
   }
 
-  // Unwrap your server shape: { result: { content: [ { type, json|text } ] } }
+  // Unwrap common content shape
   const item = data?.result?.content?.[0];
   if (!item) throw new Error("Empty MCP content");
+
   if (Object.prototype.hasOwnProperty.call(item, "json")) return item.json;
   if (Object.prototype.hasOwnProperty.call(item, "text")) return item.text;
-  return item; // fallback, just in case
+
+  // Fallbacks (defensive)
+  return data?.result ?? item ?? data;
 }
 
+/**
+ * Generic JSON-RPC call — ADVANCED/DEBUG ONLY.
+ * App code should NOT use this for normal tools; prefer callTool().
+ * Useful for things like "tools/list", "ping", etc. if supported by backend.
+ *
+ * Example:
+ *   await rpcCall("tools/list", {})
+ */
+export async function rpcCall(method, params, options = {}) {
+  const payload = rpc(method, params);
+  const data = await postJSON(MCP_BASE, payload, options);
+  return data?.result ?? data;
+}
+
+// Optional helper for tests/logging
+export function getMcpBase() {
+  return MCP_BASE;
+}
