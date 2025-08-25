@@ -90,6 +90,28 @@ def lambda_handler(event, context):
             "jsonrpc": "2.0", "id": None,
             "error": {"code": -32700, "message": f"Parse error: {e}"}
         })
+        
+        # --- Back-compat shim: accept legacy plain payloads (no JSON-RPC envelope)
+    if body and "jsonrpc" not in body:
+        if "query" in body:
+            body = {
+                "jsonrpc": "2.0",
+                "id": "shim-plan",
+                "method": "tools/call",
+                "params": { "name": "plan", "arguments": { "query": body["query"] } }
+            }
+        elif "stay" in body:
+            body = {
+                "jsonrpc": "2.0",
+                "id": "shim-hotel",
+                "method": "tools/call",
+                "params": { "name": "hotel_search", "arguments": body }
+            }
+        else:
+            return _resp(400, {
+                "jsonrpc": "2.0", "id": None,
+                "error": {"code": -32602, "message": "Legacy payload missing 'query' or 'stay'."}
+            })    
 
     rid = body.get("id")
     if body.get("jsonrpc") != "2.0":
