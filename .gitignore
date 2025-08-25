@@ -22,3 +22,7 @@ frontend/node_modules/
 # Build output
 frontend/dist/
 
+cdk/.venv/
+cdk.out/
+__pycache__/
+.DS_Store
