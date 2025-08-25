@@ -3,20 +3,20 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Lux Search — Planner + Responder</title>
+  <title>Lux Search — Planner</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-950 text-slate-50">
   <main class="max-w-6xl mx-auto px-6 py-10">
     <h1 class="text-3xl font-bold">Meet Lux Search</h1>
-    <p class="mt-1 text-slate-300">AI Planner + optional AI Responder (toggle).</p>
+    <p class="mt-1 text-slate-300">Planner (agent orchestrator) demo.</p>
 
     <form id="f" class="mt-6 grid md:grid-cols-3 gap-3">
-      <input id="city" class="rounded bg-slate-900 border border-slate-700 px-3 py-2" value="Paris" placeholder="City">
-      <input id="hood" class="rounded bg-slate-900 border border-slate-700 px-3 py-2" value="Le Marais" placeholder="Neighborhood">
+      <!-- City name (human-friendly for query composition) -->
+      <input id="city" class="rounded bg-slate-900 border border-slate-700 px-3 py-2"
+             value="Paris" placeholder="City (e.g., Paris)">
 
       <div class="grid grid-cols-2 gap-3 md:col-span-3">
-        <!-- renamed to avoid reserved keyword 'in' -->
         <input id="checkIn"  type="date" class="rounded bg-slate-900 border border-slate-700 px-3 py-2" value="2025-10-31">
         <input id="checkOut" type="date" class="rounded bg-slate-900 border border-slate-700 px-3 py-2" value="2025-11-03">
       </div>
@@ -28,9 +28,7 @@
         <input id="pool" type="checkbox" class="h-4 w-4" checked> Prefer indoor pool
       </label>
 
-      <label class="inline-flex items-center gap-2 text-sm text-slate-300 md:col-span-3">
-        <input id="useResponder" type="checkbox" class="h-4 w-4"> Use AI narrative (Responder)
-      </label>
+      <!-- (Intentionally no neighborhood/use_responder/city_code for planner route) -->
 
       <button class="rounded bg-cyan-400 text-slate-900 font-semibold px-4 py-2 md:col-span-3">Search</button>
     </form>
@@ -43,26 +41,25 @@
     <div id="results" class="mt-6 grid md:grid-cols-2 gap-4"></div>
   </main>
 
-  <!-- Use a module script so Vite can inline env vars -->
   <script type="module">
-    // CI writes .env with VITE_LUX_API; Vite inlines it here at build time
     const API_URL = import.meta.env.VITE_LUX_API || "";
-    console.log("Lux API_URL:", API_URL); // helps verify in browser devtools
+    console.log("Lux API_URL:", API_URL);
 
     const notice     = document.getElementById('notice');
     const form       = document.getElementById('f');
     const cityEl     = document.getElementById('city');
-    const hoodEl     = document.getElementById('hood');
     const checkInEl  = document.getElementById('checkIn');
     const checkOutEl = document.getElementById('checkOut');
     const adultsEl   = document.getElementById('ad');
     const maxEl      = document.getElementById('max');
     const poolEl     = document.getElementById('pool');
-    const useRespEl  = document.getElementById('useResponder');
     const r          = document.getElementById('results');
     const narr       = document.getElementById('narr');
 
     if (!API_URL) notice.classList.remove('hidden');
+
+    // Use helper (routes to Planner when payload has { query })
+    import { searchHotels } from "/src/api/searchHotels.js";
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -71,47 +68,63 @@
       r.innerHTML = "<div class='text-slate-300'>Searching…</div>";
       narr.textContent = "";
 
-      const payload = {
-        query: `Find a 4-star hotel in ${cityEl.value} ${hoodEl.value} with a gym, prefer indoor pool, under ${maxEl.value} GBP/night, ${adultsEl.value} adults, ${checkInEl.value}–${checkOutEl.value}.`,
-        stay: {
-          city: cityEl.value,
-          neighborhood: hoodEl.value,
-          check_in: checkInEl.value,
-          check_out: checkOutEl.value,
-          adults: Number(adultsEl.value),
-          max_price_gbp: Number(maxEl.value),
-          wants_indoor_pool: poolEl.checked
-        },
-        use_responder: useRespEl.checked
-      };
+      // Compose a natural-language query for the Planner Agent.
+      const city    = (cityEl.value || "").trim();
+      const inDate  = (checkInEl.value || "").trim();
+      const outDate = (checkOutEl.value || "").trim();
+      const adults  = Math.max(1, Number(adultsEl.value || 2));
+      const maxGBP  = Number(maxEl.value || 0);
+      const wantsPool = !!poolEl.checked;
+
+      const parts = [
+        city ? `Find a 4-star hotel in ${city}` : "Find a 4-star hotel",
+        wantsPool ? "with an indoor pool" : "",
+        Number.isFinite(maxGBP) && maxGBP > 0 ? `under ${maxGBP} GBP/night` : "",
+        `${adults} ${adults === 1 ? "adult" : "adults"}`,
+        (inDate && outDate) ? `for ${inDate} to ${outDate}` : ""
+      ].filter(Boolean);
+
+      const query = parts.join(", ").replace(/\s+,/g, ",");
+
+      if (!query) {
+        r.innerHTML = `<div class="text-amber-300">Please provide at least a city or date range.</div>`;
+        return;
+      }
+
+      // IMPORTANT: Planner expects ONLY { query }
+      const payload = { query };
 
       try {
-        const res = await fetch(API_URL, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await searchHotels(payload);
 
-        const data = await res.json();
-        if (data.narrative) narr.textContent = data.narrative;
+        if (data?.narrative) narr.textContent = data.narrative;
 
-        const top = data.top || [];
-        const all = data.candidates || [];
+        const hotels =
+          data?.hotels?.hotels ||
+          data?.hotels ||
+          data?.top ||
+          data?.candidates ||
+          [];
+
         const cards = (list) => list.map((h,i)=>`
           <div class="rounded border border-slate-800 bg-slate-900 p-4">
             <div class="text-xs text-slate-400">#${i+1}</div>
-            <div class="text-lg font-semibold">${h.name||'Hotel'}</div>
-            <div class="text-sm text-slate-400">${'★'.repeat(h.stars||0)} <span class="ml-1">${h.location_note||''}</span></div>
-            <div class="mt-2 text-sm">${typeof h.est_price_gbp==='number' ? '£'+Math.round(h.est_price_gbp) : 'Price TBD'}</div>
-            <div class="mt-2 text-xs text-slate-400">${(h.amenities||[]).slice(0,6).join(' · ')}</div>
+            <div class="text-lg font-semibold">${h.name || 'Hotel'}</div>
+            <div class="text-sm text-slate-400">
+              ${'★'.repeat(h.stars || 0)}
+              <span class="ml-1">${h.location_note || ''}</span>
+            </div>
+            <div class="mt-2 text-sm">${
+              typeof h.est_price_gbp === 'number' ? '£' + Math.round(h.est_price_gbp) :
+              typeof h.est_price === 'number'     ? '£' + Math.round(h.est_price) :
+              'Price TBD'
+            }</div>
+            <div class="mt-2 text-xs text-slate-400">${(h.amenities || []).slice(0,6).join(' · ')}</div>
           </div>`).join('');
 
-        r.innerHTML = `
-          ${top.length? `<h3 class="text-xl font-bold md:col-span-2">Top Picks</h3>${cards(top)}` : ''}
-          ${all.length? `<h3 class="text-xl font-bold md:col-span-2 mt-6">All Candidates</h3>${cards(all)}` : ''}
-          ${!top.length && !all.length ? '<div class="text-slate-300">No results.</div>' : ''}
-        `;
+        r.innerHTML = hotels.length
+          ? cards(hotels)
+          : '<div class="text-slate-300">No results.</div>';
       } catch (err) {
         r.innerHTML = `<div class="text-rose-300">Error: ${err.message}</div>`;
       }

@@ -4,7 +4,7 @@ import { callTool } from "./rpc"; // wraps JSON-RPC {method:"tools/call", params
 
 /**
  * Unified hotels search:
- * - If payload.query exists -> "plan"
+ * - If payload.query exists -> "plan" (Planner / Jamba)
  * - Else -> "hotel_search" with structured args (city_code required)
  *
  * @param {{
@@ -21,17 +21,32 @@ import { callTool } from "./rpc"; // wraps JSON-RPC {method:"tools/call", params
  * }} payload
  */
 export async function searchHotels(payload = {}) {
+  // Prevent ambiguous mixed requests
+  if (payload.query && payload.stay) {
+    throw new Error("Send either { query } (Planner) OR { stay, currency } (Structured), not both.");
+  }
+
   // 1) Natural-language planner route
   if (payload.query && String(payload.query).trim()) {
-    const planned = await callTool("plan", { query: String(payload.query).trim() });
+    let planned;
+    try {
+      planned = await callTool("plan", { query: String(payload.query).trim() });
+    } catch (err) {
+      throw new Error(`Planner error: ${err?.message || err}`);
+    }
     return normalizeSearchResponse(planned);
   }
 
   // 2) Structured direct search route
   const stay = payload.stay ?? {};
-  const check_in  = (stay.check_in  ?? "").trim();
-  const check_out = (stay.check_out ?? "").trim();
-  const city_code = (stay.city_code ?? "").trim().toUpperCase();
+  const check_in  = String(stay.check_in  ?? "").trim();
+  const check_out = String(stay.check_out ?? "").trim();
+  const city_code = String(stay.city_code ?? "").trim().toUpperCase();
+
+  // naive check: YYYY-MM-DD
+  const iso = /^\d{4}-\d{2}-\d{2}$/;
+  if (check_in && !iso.test(check_in))  throw new Error("check_in must be YYYY-MM-DD");
+  if (check_out && !iso.test(check_out)) throw new Error("check_out must be YYYY-MM-DD");
 
   if (!check_in || !check_out) {
     throw new Error("Missing dates: provide stay.check_in and stay.check_out (YYYY-MM-DD).");
@@ -41,7 +56,9 @@ export async function searchHotels(payload = {}) {
   }
 
   const adultsRaw = stay.adults ?? 2;
-  const adults = Number.isFinite(Number(adultsRaw)) ? Math.max(1, Math.trunc(Number(adultsRaw))) : 2;
+  const adults = Number.isFinite(Number(adultsRaw))
+    ? Math.max(1, Math.trunc(Number(adultsRaw)))
+    : 2;
 
   const wants_indoor_pool =
     typeof stay.wants_indoor_pool === "boolean" ? stay.wants_indoor_pool : undefined;
@@ -49,7 +66,7 @@ export async function searchHotels(payload = {}) {
   const max_price_gbp =
     stay.max_price_gbp != null ? Number(stay.max_price_gbp) : undefined;
 
-  const currency = (payload.currency || "GBP").toUpperCase();
+  const currency = (payload.currency || import.meta?.env?.VITE_DEFAULT_CURRENCY || "GBP").toUpperCase();
 
   const args = {
     stay: {
@@ -63,9 +80,12 @@ export async function searchHotels(payload = {}) {
     currency,
   };
 
-  const raw = await callTool("hotel_search", args);
+  let raw;
+  try {
+    raw = await callTool("hotel_search", args);
+  } catch (err) {
+    throw new Error(`Hotel search error: ${err?.message || err}`);
+  }
+
   return normalizeSearchResponse(raw);
 }
-
-
-

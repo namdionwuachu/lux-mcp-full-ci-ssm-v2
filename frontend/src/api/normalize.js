@@ -4,25 +4,11 @@
  * Normalize a variety of backend shapes (planner or direct search)
  * into a consistent structure:
  *
- * {
- *   items: [
- *     {
- *       id, name,
- *       price: number | null,
- *       currency: "GBP" | "USD" | ... | null,
- *       address: "string" | null,
- *       city: "string" | null,
- *       lat: number | null,
- *       lng: number | null,
- *       stars: number | null,
- *       rating: number | null,
- *       thumbnail: "https://..." | null,
- *       source: "hotel_search" | "plan" | "unknown",
- *       raw: {...original item...}
- *     }
- *   ],
- *   meta: {...any useful metadata we can surface...}
- * }
+ * Canonical (legacy) shape:
+ *   { items: [...], meta: {...} }
+ *
+ * Plus compatibility for newer callers:
+ *   { hotels: items, narrative: meta.narrative ?? "" }
  */
 
 export function normalizeSearchResponse(input) {
@@ -48,19 +34,26 @@ export function normalizeSearchResponse(input) {
     : (looksLikeHotel(input) || looksLikeOffer(input)) ? [input] : [];
 
   const items = sourceItems
-    .map(coerceItem)     // If planner returns step-wrapped objects
-    .map(normalizeItem)  // Map to canonical fields
+    .map(coerceItem)     // unwrap step/data/result containers
+    .map(normalizeItem)  // map to canonical fields
     .filter(Boolean);
 
   const meta = extractMeta(input);
 
-  return { items, meta };
+  // Return both legacy + compatibility fields
+  return {
+    items,
+    meta,
+    // compatibility for callers expecting these:
+    hotels: items,
+    narrative: meta?.narrative ?? ""
+  };
 }
 
 /* ----------------- helpers ----------------- */
 
 function empty() {
-  return { items: [], meta: {} };
+  return { items: [], meta: {}, hotels: [], narrative: "" };
 }
 
 function flattenArray(arrays) {
@@ -135,9 +128,9 @@ function normalizeItem(x = {}) {
     x.propertyId ||
     x.offerId ||
     x.reference ||
-    (name ? slug(`${name}-${x.checkIn || ""}-${x.checkOut || ""}`) : null);
+    (name ? slug(`${name}-${x.checkIn || x.check_in || ""}-${x.checkOut || x.check_out || ""}`) : null);
 
-  // Price & currency (try many common shapes)
+  // Price & currency
   const price =
     num(x.price?.total) ??
     num(x.price?.amount) ??
@@ -262,5 +255,31 @@ function slug(s) {
 
 function joinParts(arr) {
   return arr.filter(Boolean).join(", ") || null;
+}
+
+/**
+ * Extract useful metadata that callers may show in the UI.
+ * This also feeds `narrative` for compatibility return.
+ */
+function extractMeta(input = {}) {
+  // Try multiple likely keys for LLM narration / notes
+  const narrative =
+    input.narrative ||
+    input.summary ||
+    input.text ||
+    input.message ||
+    (Array.isArray(input.notes) ? input.notes.join(" • ") : "") ||
+    "";
+
+  // Surface any tool/agent info if present
+  const agent =
+    input.agent ||
+    input.tool ||
+    input.type ||
+    input.workflow ||
+    null;
+
+  // You can add more fields here as needed (tokens, timing, trace IDs, etc.)
+  return { narrative, agent };
 }
 
