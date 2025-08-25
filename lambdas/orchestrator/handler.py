@@ -9,8 +9,8 @@ from agents import planner
 from agents.responder import narrate
 
 # ---- In-process tool registration (no downstream Lambdas/HTTP) ----
-from tools.hotel_search import run as hotel_search_run
-from tools.budget_filter import run as budget_filter_run
+from tools.provider_amadeus import search_hotels as hotel_search_run
+from tools.hotels_filter import run as budget_filter_run
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)

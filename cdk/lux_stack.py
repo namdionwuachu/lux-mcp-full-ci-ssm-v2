@@ -44,9 +44,14 @@ class LuxStack(Stack):
             "AMADEUS_BASE_BACKOFF": os.getenv("AMADEUS_BASE_BACKOFF", "1.0"),
 
             # Google Places (consistent pattern: pass secret NAME, not key)
-            "GOOGLE_PLACES_SECRET_NAME": os.getenv("GOOGLE_PLACES_SECRET_NAME", "/lux/google/places_api_key"),
+            "GOOGLE_SECRET_NAME": os.getenv("GOOGLE_SECRET_NAME", "/lux/google/places_api_key"),
             "ENABLE_PLACES_PHOTOS": os.getenv("ENABLE_PLACES_PHOTOS", "1"),
             "MAX_PHOTOS_PER_HOTEL": os.getenv("MAX_PHOTOS_PER_HOTEL", "4"),
+            
+            # align other knobs your provider actually uses:
+            "LUX_HOTEL_CAP": os.getenv("LUX_HOTEL_CAP", "36"),
+            "TIME_BUFFER_MS": os.getenv("TIME_BUFFER_MS", "3000"),
+            "LUX_RADIUS_KM_DEFAULT": os.getenv("LUX_RADIUS_KM_DEFAULT", "8"),
         }
 
         repo_root = Path(__file__).resolve().parents[1]  # <repo_root>
@@ -56,7 +61,7 @@ class LuxStack(Stack):
             self, "Orchestrator",
             runtime=_lambda.Runtime.PYTHON_3_12,
             handler="handler.lambda_handler",
-            timeout=Duration.seconds(20),
+            timeout=Duration.seconds(60),
             memory_size=512,
             environment=env,
             code=_lambda.Code.from_asset(
@@ -93,7 +98,7 @@ class LuxStack(Stack):
             self, "HotelAgent",
             runtime=_lambda.Runtime.PYTHON_3_12,
             handler="handler.lambda_handler",
-            timeout=Duration.seconds(20),
+            timeout=Duration.seconds(60),
             memory_size=512,
             environment=env,
             code=_lambda.Code.from_asset(
@@ -125,7 +130,7 @@ class LuxStack(Stack):
             self, "BudgetAgent",
             runtime=_lambda.Runtime.PYTHON_3_12,
             handler="handler.lambda_handler",
-            timeout=Duration.seconds(20),
+            timeout=Duration.seconds(60),
             memory_size=512,
             environment=env,
             code=_lambda.Code.from_asset(
@@ -154,7 +159,7 @@ class LuxStack(Stack):
             self, "McpServer",
             runtime=_lambda.Runtime.PYTHON_3_12,
             handler="mcp_server.lambda_handler",  # file: lambdas/orchestrator/mcp_server.py
-            timeout=Duration.seconds(20),
+            timeout=Duration.seconds(60),
             memory_size=512,
             environment={**env, "ALLOWED_ORIGIN": os.getenv("ALLOWED_ORIGIN", "*")},
             code=_lambda.Code.from_asset(
