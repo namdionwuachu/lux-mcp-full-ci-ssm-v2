@@ -373,6 +373,11 @@ def _offers_by_hotel_ids_rest(
 
         chunk_ids = ",".join(deduped[i : i + OFFERS_CHUNK_SIZE])
         params = dict(params_base)
+        
+        #Ensure we never pass unsupported keys to /v3/shopping/hotel-offers
+        for bad in ("cityCode", "city_code", "latitude", "longitude", "radius", "radiusUnit"):
+            params.pop(bad, None)
+ 
 
         if isinstance(params.get("bestRateOnly"), bool):
             params["bestRateOnly"] = "true" if params["bestRateOnly"] else "false"
@@ -385,6 +390,19 @@ def _offers_by_hotel_ids_rest(
         
         time.sleep(INTER_CHUNK_SLEEP)
         
+        # Extra visibility on the exact query we send
+        logger.info({
+            "stage": "amadeus_offers_call",
+            "path": "/v3/shopping/hotel-offers",
+            "hotelIds_count": len(chunk_ids.split(",")),
+            "params_sample": {
+                k: params[k]
+                for k in ("adults", "checkInDate", "checkOutDate", "currency",
+                  "roomQuantity", "bestRateOnly", "hotelIds")
+                if k in params
+            }
+        })
+
         resp = _rest_get("/v3/shopping/hotel-offers", params)
         part = resp.get("data", []) or []
         logger.info({"stage": "amadeus_offers_chunk", "chunk_size": len(chunk_ids.split(",")), "returned": len(part)})

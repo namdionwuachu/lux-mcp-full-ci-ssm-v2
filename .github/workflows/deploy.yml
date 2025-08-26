@@ -50,6 +50,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+        #  NEW STEP 1 — show Docker info
+      - name: Docker info (prove bundling can run)
+       run: |
+         docker --version
+         docker info --format '{{.ServerVersion}}'
+
+      # NEW STEP 2 — clean out any old bundle artifacts
+      - name: Clean CDK out
+        working-directory: cdk
+        run: rm -rf cdk.out
+
       - name: CDK Synth (debug)
         working-directory: cdk
         run: cdk synth --app "python app.py"
