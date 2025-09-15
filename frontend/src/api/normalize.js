@@ -2,33 +2,36 @@
 
 export function normalizeSearchResponse(input) {
   if (!input) return empty();
+  // 🔓 Unwrap JSON-RPC envelopes like: result.content[0].json
+  const env = input?.result?.content?.[0]?.json ?? input;
+
 
   // Pull from many common shapes
   const candidates = [
-    input.items,
-    input.results,
-    input.offers,
+    env.items,
+    env.results,
+    env.offers,
 
     // nested hotel collections
-    input.hotels?.hotels,
-    input.hotels?.items,
-    input.hotels?.results,
+    env.hotels?.hotels,
+    env.hotels?.items,
+    env.hotels?.results,
 
     // planner-style outputs
-    input.top,
-    input.candidates,
+    env.top,
+    env.candidates,
 
     // misc
-    input.hotels,
-    input.data,
-    input.payload,
-    input.steps && flattenSteps(input.steps),
+    env.hotels,
+    env.data,
+    env.payload,
+    env.steps && flattenSteps(env.steps),
   ].filter(Boolean);
 
   const flat = candidates.flatMap(a => (Array.isArray(a) ? a : []));
   const sourceItems = flat.length
     ? flat
-    : (looksLikeHotel(input) || looksLikeOffer(input)) ? [input] : [];
+    : (looksLikeHotel(env) || looksLikeOffer(env)) ? [env] : [];
 
   const items = uniqByIdOrName(
     sourceItems
@@ -37,7 +40,7 @@ export function normalizeSearchResponse(input) {
       .filter(Boolean)
   );
 
-  const meta = extractMeta(input);
+  const meta = extractMeta(env);
   meta.counts = { pools: flat.length, items: items.length };
 
   return {

@@ -6,9 +6,9 @@ export default function SearchResults({ data, isLoading }) {
 
   // Prefer normalized items; fall back to common shapes
   const hotels =
-    (Array.isArray(data?.items) && data.items.length ? data.items : null) ??
-    (Array.isArray(data?.hotels) && data.hotels.length ? data.hotels : null) ??
-    (Array.isArray(data?.hotels?.hotels) && data.hotels.hotels.length ? data.hotels.hotels : null) ??
+    (Array.isArray(env?.items) && env.items.length ? env.items : null) ??
+    (Array.isArray(env?.hotels) && env.hotels.length ? env.hotels : null) ??
+    (Array.isArray(env?.hotels?.hotels) && env.hotels.hotels.length ? env.hotels.hotels : null) ??
     [];
 
   // Debug (optional)
@@ -19,10 +19,10 @@ export default function SearchResults({ data, isLoading }) {
 
   return (
     <div className="space-y-4">
-      {data?.narrative ? (
+      {env?.narrative ? (
         <section className="rounded-xl border bg-white p-4 shadow-sm">
           <h2 className="text-xl font-semibold mb-2">Summary</h2>
-          <p className="text-gray-800 whitespace-pre-wrap">{data.narrative}</p>
+          <p className="text-gray-800 whitespace-pre-wrap">{env.narrative}</p>
         </section>
       ) : null}
 
