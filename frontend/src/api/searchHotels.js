@@ -1,91 +1,109 @@
-// src/api/searchHotels.js
+// frontend/src/api/searchHotels.js
+import { callTool } from "./rpc";
 import { normalizeSearchResponse } from "./normalize";
-import { callTool } from "./rpc"; // wraps JSON-RPC {method:"tools/call", params:{name, arguments}}
 
 /**
- * Unified hotels search:
- * - If payload.query exists -> "plan" (Planner / Jamba)
- * - Else -> "hotel_search" with structured args (city_code required)
- *
- * @param {{
- *   query?: string,
- *   stay?: {
- *     check_in: string,
- *     check_out: string,
- *     city_code: string,          // IATA city code, e.g. "PAR", "LON"
- *     adults?: number,
- *     max_price_gbp?: number,
- *     wants_indoor_pool?: boolean
- *   },
- *   currency?: string             // e.g. "GBP"
- * }} payload
+ * Call MCP "hotel_search" and normalize the response for the UI.
+ * Returns: { items, hotels, narrative, meta, _raw }
  */
-export async function searchHotels(payload = {}) {
-  // Prevent ambiguous mixed requests
-  if (payload.query && payload.stay) {
-    throw new Error("Send either { query } (Planner) OR { stay, currency } (Structured), not both.");
+async function runHotelSearch(toolArgs, { timeoutMs = 20000 } = {}) {
+  const res = await callTool("hotel_search", toolArgs, { timeoutMs });
+  // rpc.js sometimes returns JSON-RPC shape: { content: [{ json: {...} }] }
+  const raw = res?.content?.[0]?.json ?? res ?? {};
+  const normalized = normalizeSearchResponse(raw);
+  // Keep the raw payload for debugging in the UI if needed
+  return { ...normalized, _raw: raw };
+}
+
+/**
+ * Normalize dates to YYYY-MM-DD (accepts DD/MM/YYYY, YYYY-MM-DD, ISO with time)
+ */
+function toYMD(input) {
+  if (!input || typeof input !== "string") return "";
+  const s = input.trim();
+  if (!s) return "";
+
+  // DD/MM/YYYY or D/M/YYYY
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) {
+    const [d, m, y] = s.split("/").map(String);
+    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
   }
 
-  // 1) Natural-language planner route
-  if (payload.query && String(payload.query).trim()) {
-    let planned;
-    try {
-      planned = await callTool("plan", { query: String(payload.query).trim() });
-    } catch (err) {
-      throw new Error(`Planner error: ${err?.message || err}`);
-    }
-    return normalizeSearchResponse(planned);
+  // ISO with time
+  if (/^\d{4}-\d{1,2}-\d{1,2}T/.test(s)) {
+    return s.slice(0, 10);
   }
 
-  // 2) Structured direct search route
+  // YYYY-MM-DD or YYYY-M-D
+  if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(s)) {
+    const [y, m, d] = s.split("-");
+    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+
+  // Fallback: return as-is (backend is tolerant)
+  return s;
+}
+
+function hasLikeDate(s) {
+  return typeof s === "string" && /\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2}\/\d{4}/.test(s);
+}
+
+/**
+ * Main entry.
+ * If payload has { query } without { stay }, uses QUERY path (LLM/planner style).
+ * Otherwise uses STRUCTURED path with explicit params.
+ */
+async function searchHotels(payload = {}) {
+  console.log("=== SEARCH HOTELS CALLED ===");
+  const hasQuery = !!payload.query;
+  const hasStay  = !!payload.stay || !!payload.city_code || !!payload.adults || !!payload.currency;
+  console.log("Has query:", hasQuery);
+  console.log("Has stay:", hasStay);
+
+  // ---- QUERY PATH (freeform) ----
+  if (hasQuery && !payload.stay) {
+    console.log("Taking path: QUERY");
+    const toolArgs = { query: payload.query };
+    const out = await runHotelSearch(toolArgs, { timeoutMs: 30000 });
+    console.log("[searchHotels] normalized (QUERY):", out);
+    return out;
+  }
+
+  // ---- STRUCTURED PATH ----
+  console.log("Taking path: STRUCTURED");
+
+  // Extract + normalize structured fields
   const stay = payload.stay ?? {};
-  const check_in  = String(stay.check_in  ?? "").trim();
-  const check_out = String(stay.check_out ?? "").trim();
-  const city_code = String(stay.city_code ?? "").trim().toUpperCase();
+  const checkIn  = toYMD(stay.check_in ?? payload.check_in ?? "");
+  const checkOut = toYMD(stay.check_out ?? payload.check_out ?? "");
 
-  // naive check: YYYY-MM-DD
-  const iso = /^\d{4}-\d{2}-\d{2}$/;
-  if (check_in && !iso.test(check_in))  throw new Error("check_in must be YYYY-MM-DD");
-  if (check_out && !iso.test(check_out)) throw new Error("check_out must be YYYY-MM-DD");
+  if (!hasLikeDate(checkIn)) throw new Error(`Check-in date is required (got "${stay.check_in ?? payload.check_in ?? ""}"). Use DD/MM/YYYY or YYYY-MM-DD.`);
+  if (!hasLikeDate(checkOut)) throw new Error(`Check-out date is required (got "${stay.check_out ?? payload.check_out ?? ""}"). Use DD/MM/YYYY or YYYY-MM-DD.`);
 
-  if (!check_in || !check_out) {
-    throw new Error("Missing dates: provide stay.check_in and stay.check_out (YYYY-MM-DD).");
-  }
-  if (!city_code) {
-    throw new Error("Missing stay.city_code (e.g., 'PAR' for Paris, 'LON' for London).");
-  }
+  const city_code = String(payload.city_code ?? stay.city_code ?? "").trim().toUpperCase();
+  if (!city_code) throw new Error("Provide city_code (e.g., PAR or LON).");
 
-  const adultsRaw = stay.adults ?? 2;
-  const adults = Number.isFinite(Number(adultsRaw))
-    ? Math.max(1, Math.trunc(Number(adultsRaw)))
-    : 2;
+  const adultsRaw = payload.adults ?? stay.adults ?? 2;
+  const adults = Number.isFinite(Number(adultsRaw)) ? Math.max(1, Math.trunc(Number(adultsRaw))) : 2;
 
-  const wants_indoor_pool =
-    typeof stay.wants_indoor_pool === "boolean" ? stay.wants_indoor_pool : undefined;
+  const currency =
+    String(payload.currency || stay.currency || import.meta?.env?.VITE_DEFAULT_CURRENCY || "GBP")
+      .trim()
+      .toUpperCase();
 
-  const max_price_gbp =
-    stay.max_price_gbp != null ? Number(stay.max_price_gbp) : undefined;
-
-  const currency = (payload.currency || import.meta?.env?.VITE_DEFAULT_CURRENCY || "GBP").toUpperCase();
-
-  const args = {
-    stay: {
-      check_in,
-      check_out,
-      city_code,
-      ...(adults ? { adults } : {}),
-      ...(typeof wants_indoor_pool === "boolean" ? { wants_indoor_pool } : {}),
-      ...(Number.isFinite(max_price_gbp) ? { max_price_gbp } : {}),
-    },
+  const toolArgs = {
+    stay: { check_in: checkIn, check_out: checkOut },
+    city_code,
+    adults,
     currency,
   };
 
-  let raw;
-  try {
-    raw = await callTool("hotel_search", args);
-  } catch (err) {
-    throw new Error(`Hotel search error: ${err?.message || err}`);
-  }
+  console.log("Structured call args:", toolArgs);
 
-  return normalizeSearchResponse(raw);
+  const out = await runHotelSearch(toolArgs, { timeoutMs: 20000 });
+  console.log("[searchHotels] normalized (STRUCTURED):", out);
+  return out;
 }
+
+export { searchHotels };
+export default searchHotels;

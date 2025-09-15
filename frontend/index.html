@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Lux Search — Planner</title>
+  <!-- OK for demos. For prod, install Tailwind locally. -->
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-950 text-slate-50">
@@ -12,7 +13,6 @@
     <p class="mt-1 text-slate-300">Planner (agent orchestrator) demo.</p>
 
     <form id="f" class="mt-6 grid md:grid-cols-3 gap-3">
-      <!-- City name (human-friendly for query composition) -->
       <input id="city" class="rounded bg-slate-900 border border-slate-700 px-3 py-2"
              value="Paris" placeholder="City (e.g., Paris)">
 
@@ -27,8 +27,6 @@
       <label class="inline-flex items-center gap-2 text-sm text-slate-300 md:col-span-3">
         <input id="pool" type="checkbox" class="h-4 w-4" checked> Prefer indoor pool
       </label>
-
-      <!-- (Intentionally no neighborhood/use_responder/city_code for planner route) -->
 
       <button class="rounded bg-cyan-400 text-slate-900 font-semibold px-4 py-2 md:col-span-3">Search</button>
     </form>
@@ -58,8 +56,127 @@
 
     if (!API_URL) notice.classList.remove('hidden');
 
-    // Use helper (routes to Planner when payload has { query })
+    // Uses your existing helper
     import { searchHotels } from "/src/api/searchHotels.js";
+
+    // ---- helpers (view layer) ----
+    function parsePrice(v) {
+      if (v == null) return null;
+      let s = String(v).trim();
+      if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+        s = s.slice(1, -1).trim();
+      }
+      const m = s.match(/-?\d+(?:[.,]\d+)?/);
+      if (!m) return null;
+      const n = parseFloat(m[0].replace(",", "."));
+      return Number.isFinite(n) ? n : null;
+    }
+
+    function money(n, currency = "GBP") {
+      try { return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(n); }
+      catch { return `${currency} ${Number(n).toFixed(2)}`; }
+    }
+
+    function fixGooglePhotoUrl(u) {
+      if (!u) return u;
+      u = String(u).trim();
+      if ((u.startsWith('"') && u.endsWith('"')) || (u.startsWith("'") && u.endsWith("'"))) {
+        u = u.slice(1, -1);
+      }
+      if (u.includes("/maps.googleapis.com/maps/api/place/photo") && u.includes("photo_reference=")) {
+        u = u.replace("photo_reference=", "photoreference=");
+      }
+      return u;
+    }
+
+    const getCityCode = (cityName) => {
+      const cityMap = {
+        'paris': 'PAR','london': 'LON','new york': 'NYC','tokyo': 'TYO','rome': 'ROM','madrid': 'MAD',
+        'berlin': 'BER','barcelona': 'BCN','amsterdam': 'AMS','dubai': 'DXB','singapore': 'SIN',
+        'hong kong': 'HKG','sydney': 'SYD','melbourne': 'MEL'
+      };
+      return cityMap[(cityName || '').toLowerCase()] || 'PAR';
+    };
+
+    function extractHotels(resp) {
+      // Prefer normalized items from your searchHotels()
+      if (Array.isArray(resp?.items) && resp.items.length) return resp.items;
+      if (Array.isArray(resp?.hotels) && resp.hotels.length) return resp.hotels;
+
+      // Raw MCP JSON-RPC fallback (seen in your logs)
+      const j = resp?.result?.content?.[0]?.json;
+      if (Array.isArray(j?.hotels?.hotels)) return j.hotels.hotels;
+      if (Array.isArray(j?.hotels)) return j.hotels;
+
+      if (Array.isArray(resp?.results)) return resp.results;
+      if (Array.isArray(resp?.offers)) return resp.offers;
+      return [];
+    }
+
+    function pickImage(hotel) {
+      const cands = [
+        hotel.thumbnail,
+        Array.isArray(hotel.images) && hotel.images[0],
+        Array.isArray(hotel.photos) && (typeof hotel.photos[0] === "string" ? hotel.photos[0] : (hotel.photos[0]?.url || hotel.photos[0]?.src)),
+        hotel.image_url || hotel.image || hotel.thumbnailUrl
+      ].filter(Boolean);
+      const first = cands[0] || null;
+      return fixGooglePhotoUrl(first);
+    }
+
+    function hotelCardHTML(h, i) {
+      const name = h.name || h.title || `Hotel ${i + 1}`;
+
+      // Prices: normalized first, then raw fallbacks
+      const priceNum =
+        parsePrice(h.price) ??
+        parsePrice(h.est_price_gbp) ??
+        parsePrice(h.raw && h.raw.est_price_gbp) ??
+        null;
+
+      const currency =
+        (h.currency && String(h.currency).toUpperCase()) ||
+        (h.est_price_gbp != null ? "GBP" : "GBP");
+
+      const priceText = priceNum != null ? money(priceNum, currency) : "Price unavailable";
+
+      const img = pickImage(h);
+      const stars = Number.isFinite(Number(h.stars)) ? Number(h.stars) : null;
+      const starText = stars ? "★".repeat(Math.max(0, Math.min(5, Math.round(stars)))) : "";
+      const amenities = Array.isArray(h.amenities) ? h.amenities.slice(0, 6).join(" · ") : "";
+      const mapsHref = h.url || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}`;
+
+      return `
+        <article class="rounded overflow-hidden border border-slate-800 bg-slate-900">
+          <div class="aspect-[16/10] bg-slate-800">
+            ${img ? `<img src="${img}" alt="${name}" class="h-full w-full object-cover" loading="lazy" decoding="async">`
+                   : `<div class="h-full w-full grid place-items-center text-3xl">🏨</div>`}
+          </div>
+          <div class="p-4">
+            <h3 class="text-lg font-semibold">
+              <a href="${mapsHref}" target="_blank" rel="noopener noreferrer" class="hover:underline">${name}</a>
+            </h3>
+            <div class="mt-1 text-sm text-slate-400 flex items-center gap-2">
+              ${starText ? `<span>${starText}</span>` : ""}
+              ${h.location_note ? `<span class="truncate">${h.location_note}</span>` : ""}
+            </div>
+            <div class="mt-3 flex items-center">
+              <span class="text-cyan-300 font-bold text-lg">${priceText}</span>
+              ${amenities ? `<span class="ml-auto text-xs text-slate-400 truncate">${amenities}</span>` : ""}
+            </div>
+          </div>
+        </article>
+      `;
+    }
+
+    function renderHotels(list) {
+      const container = document.getElementById("results");
+      if (!Array.isArray(list) || list.length === 0) {
+        container.innerHTML = '<div class="text-slate-300">No results.</div>';
+        return;
+      }
+      container.innerHTML = list.map(hotelCardHTML).join("");
+    }
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -68,68 +185,46 @@
       r.innerHTML = "<div class='text-slate-300'>Searching…</div>";
       narr.textContent = "";
 
-      // Compose a natural-language query for the Planner Agent.
       const city    = (cityEl.value || "").trim();
       const inDate  = (checkInEl.value || "").trim();
       const outDate = (checkOutEl.value || "").trim();
       const adults  = Math.max(1, Number(adultsEl.value || 2));
-      const maxGBP  = Number(maxEl.value || 0);
       const wantsPool = !!poolEl.checked;
+      // max is currently unused in the call; keep if you’ll filter client-side
 
-      const parts = [
-        city ? `Find a 4-star hotel in ${city}` : "Find a 4-star hotel",
-        wantsPool ? "with an indoor pool" : "",
-        Number.isFinite(maxGBP) && maxGBP > 0 ? `under ${maxGBP} GBP/night` : "",
-        `${adults} ${adults === 1 ? "adult" : "adults"}`,
-        (inDate && outDate) ? `for ${inDate} to ${outDate}` : ""
-      ].filter(Boolean);
-
-      const query = parts.join(", ").replace(/\s+,/g, ",");
-
-      if (!query) {
-        r.innerHTML = `<div class="text-amber-300">Please provide at least a city or date range.</div>`;
+      if (!city) {
+        r.innerHTML = `<div class="text-amber-300">Please provide a city.</div>`;
+        return;
+      }
+      if (!inDate || !outDate) {
+        r.innerHTML = `<div class="text-amber-300">Please provide both check-in and check-out dates.</div>`;
         return;
       }
 
-      // IMPORTANT: Planner expects ONLY { query }
-      const payload = { query };
+      const payload = {
+        stay: { check_in: inDate, check_out: outDate },
+        city_code: getCityCode(city),
+        adults,
+        currency: 'GBP',
+        // You can pass wantsPool / max here if your backend supports filters
+      };
+
+      console.log("Sending payload:", payload);
 
       try {
         const data = await searchHotels(payload);
 
         if (data?.narrative) narr.textContent = data.narrative;
 
-        const hotels =
-          data?.hotels?.hotels ||
-          data?.hotels ||
-          data?.top ||
-          data?.candidates ||
-          [];
-
-        const cards = (list) => list.map((h,i)=>`
-          <div class="rounded border border-slate-800 bg-slate-900 p-4">
-            <div class="text-xs text-slate-400">#${i+1}</div>
-            <div class="text-lg font-semibold">${h.name || 'Hotel'}</div>
-            <div class="text-sm text-slate-400">
-              ${'★'.repeat(h.stars || 0)}
-              <span class="ml-1">${h.location_note || ''}</span>
-            </div>
-            <div class="mt-2 text-sm">${
-              typeof h.est_price_gbp === 'number' ? '£' + Math.round(h.est_price_gbp) :
-              typeof h.est_price === 'number'     ? '£' + Math.round(h.est_price) :
-              'Price TBD'
-            }</div>
-            <div class="mt-2 text-xs text-slate-400">${(h.amenities || []).slice(0,6).join(' · ')}</div>
-          </div>`).join('');
-
-        r.innerHTML = hotels.length
-          ? cards(hotels)
-          : '<div class="text-slate-300">No results.</div>';
+        // ✅ Prefer normalized items first
+        const hotels = extractHotels(data);
+        console.log("[HARNESS] rendering", hotels?.length ?? 0, "hotels");
+        renderHotels(hotels);
       } catch (err) {
+        console.error(err);
         r.innerHTML = `<div class="text-rose-300">Error: ${err.message}</div>`;
       }
     });
   </script>
 </body>
 </html>
-

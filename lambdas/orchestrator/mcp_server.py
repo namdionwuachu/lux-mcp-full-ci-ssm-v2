@@ -9,6 +9,8 @@ LAM = boto3.client("lambda")
 HOTEL_FN  = os.getenv("HOTEL_FN")   # arn or name of your hotel_agent lambda
 BUDGET_FN = os.getenv("BUDGET_FN")  # arn or name of your budget_agent lambda
 ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "*")
+INCLUDE_RESPONDER = os.getenv("INCLUDE_RESPONDER", "true").lower() == "true"
+
 
 
 def _resp(code: int, body: Dict[str, Any]):
@@ -40,6 +42,23 @@ def _invoke(fn: str, payload: dict) -> dict:
     except Exception:
         return {"status": "error", "error": "invalid_lambda_response"}
 
+def _normalize_date(d):
+    """Accept DD/MM/YYYY, YYYY-MM-DD, or ISO strings; return YYYY-MM-DD."""
+    if not d:
+        return None
+    s = str(d).strip()
+    try:
+        # UK style: 31/10/2025
+        if "/" in s:
+            return datetime.strptime(s, "%d/%m/%Y").strftime("%Y-%m-%d")
+        # ISO-like: 2025-10-31 or 2025-10-31T00:00:00Z
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).strftime("%Y-%m-%d")
+    except Exception:
+        # Fallback: first 10 chars as YYYY-MM-DD
+        try:
+            return datetime.strptime(s[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
+        except Exception:
+            return s  # last resort: pass through
 
 # ---- MCP handlers ----
 
@@ -98,6 +117,7 @@ def _tools_list(_req):
                     "properties": {
                         "top": {"type": "array", "items": {"type": "object"}},
                         "candidates": {"type": "array", "items": {"type": "object"}},
+                        "context": {"type": "object"}
                     },
                     "required": ["top", "candidates"],
                 },
@@ -178,6 +198,11 @@ def _planner_execute_handler(args: Dict[str, Any]) -> Dict[str, Any]:
     if not (stay.get("check_in") and stay.get("check_out") and stay.get("city_code")):
         return {"status":"error","error":"need stay {check_in, check_out, city_code} or a parseable query"}
 
+    # Normalize dates so child lambdas always get YYYY-MM-DD
+    stay["check_in"] = _normalize_date(stay.get("check_in"))
+    stay["check_out"] = _normalize_date(stay.get("check_out"))
+
+
     # planner (for notes / agent order)
     try:
         plan_out = _planner_handler({"query": query})
@@ -198,8 +223,8 @@ def _planner_execute_handler(args: Dict[str, Any]) -> Dict[str, Any]:
     bf_in = {
         "hotels": hotels,
         "max_price_gbp": stay.get("max_price_gbp"),
-        "check_in": stay.get("check_in"),
-        "check_out": stay.get("check_out"),
+        "check_in": _normalize_date(stay.get("check_in")),
+        "check_out": _normalize_date(stay.get("check_out")),
         "top_n": int(args.get("top_n", 5) or 5),
         "task_id": args.get("request_id"),
     }
@@ -232,13 +257,69 @@ def _tools_call(req):
     p = req.get("params", {}) or {}
     name = p.get("name")
     args = p.get("arguments") or {}
-    rid = args.get("request_id")
+    # Use request_id if provided, else fall back to JSON-RPC id
+    rid = args.get("request_id") or req.get("id")
 
-    try:
+    try:   
         if name == "hotel_search":
             if not HOTEL_FN:
                 return {"content": [{"type": "text", "text": "HOTEL_FN env not set"}], "isError": True}
-            out = _invoke(HOTEL_FN, {"stay": args.get("stay"), "task_id": rid})
+
+            # Normalize: allow both shapes — top-level fields OR inside 'stay'
+            stay = dict(args.get("stay") or {})
+            for k in ("city_code", "adults", "wants_indoor_pool", "max_price_gbp", "currency"):
+                if args.get(k) is not None and stay.get(k) is None:
+                    stay[k] = args[k]
+
+            # Normalize dates so downstream lambdas don’t choke on DD/MM/YYYY
+            if "check_in" in stay:
+                stay["check_in"] = _normalize_date(stay.get("check_in"))
+            if "check_out" in stay:
+                stay["check_out"] = _normalize_date(stay.get("check_out"))
+
+            # ---- Step 1: Hotel search
+            payload = {"stay": stay, "task_id": (args.get("request_id") or req.get("id"))}
+            if args.get("currency") is not None:
+                payload["currency"] = args["currency"]  # harmless if ignored by Hotel
+            print(json.dumps({"stage": "mcp.hotel_search.invoke", "stay_keys": sorted(list(stay.keys())), "task_id": rid}))
+            hs = _invoke(HOTEL_FN, payload) or {}
+            hotels = (((hs or {}).get("hotels") or {}).get("hotels")) or []
+
+            # ---- Step 2: Budget filter
+            if not BUDGET_FN:
+                return {"content": [{"type": "text", "text": "BUDGET_FN env not set"}], "isError": True}
+            top_n = int(args.get("top_n", 5) or 5)
+            bf_in = {
+                "hotels": hotels,
+                "max_price_gbp": stay.get("max_price_gbp"),
+                "check_in": stay.get("check_in"),
+                "check_out": stay.get("check_out"),
+                "top_n": top_n,
+                "task_id": rid,
+            }
+            bf = _invoke(BUDGET_FN, bf_in) or {}
+            top = bf.get("top") or bf.get("ranked") or []
+            candidates = bf.get("candidates") or top
+            meta = bf.get("meta") or {"total_in": len(hotels), "under_budget": len(top)}
+
+            result = {
+                "status": "ok",
+                "hotels": {"status": "ok", "hotels": top},  # GUI cards = under-budget only
+                "meta": {"budget_filter": {"under_budget": len([h for h in candidates if h.get('passes_budget')])}},
+            }
+
+            # ---- Step 3: Optional responder (in-process)
+            if INCLUDE_RESPONDER:
+                try:
+                    from agents.responder import narrate
+                    context = {"stay": stay}
+                    narration = narrate(top=top, candidates=candidates, context=context)
+                    # unify field for GUI
+                    result["narrative"] = narration.get("narrative") if isinstance(narration, dict) else (narration or "")
+                except Exception as e:
+                    result["narrative_error"] = str(e)
+
+            out = result                  
 
         elif name == "budget_filter":
             if not BUDGET_FN:
@@ -258,11 +339,12 @@ def _tools_call(req):
         elif name == "responder_narrate":
             try:
                 from agents.responder import narrate
-                text = narrate(args.get("top", []), args.get("candidates", []))
-                out = {"status": "ok", "text": text}
+                text = narrate(args.get("top", []), args.get("candidates", []), args.get("context", {}))
+                # normalize to 'narrative' for GUI
+                out = {"status": "ok", "narrative": (text.get("narrative") if isinstance(text, dict) else text)}
+             
             except Exception:
-                out = {"status": "ok", "text": "Responder not available in this build."}
-
+                out = {"status": "ok", "narrative": "Responder not available in this build."}
         elif name in ("planner_plan", "plan"):
             out = _planner_handler(args)
 

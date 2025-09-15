@@ -35,7 +35,19 @@ export default function App() {
 
         const query = parts.join(", ").replace(/\s+,/g, ",");
 
-        const result = await searchHotels({ query });
+        const check_in  = checkIn;    // e.g. "2025-10-31"
+        const check_out = checkOut;   // e.g. "2025-11-03"
+        const city_code = city.toUpperCase(); // ✅ Use 'city' state variable that EXISTS
+        const adults = 2;                     // ✅ Use fixed value (or create state variable)
+        const currency = "GBP";               // ✅ Use fixed value (or create state variable)
+
+        const result = await searchHotels({
+          stay: { check_in, check_out },
+          city_code,
+          adults,
+          currency,
+        });
+
         // normalizeSearchResponse returns { hotels, narrative }
         setData({
           hotels: result.hotels || [],

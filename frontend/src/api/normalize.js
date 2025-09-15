@@ -1,52 +1,50 @@
 // frontend/src/api/normalize.js
 
-/**
- * Normalize a variety of backend shapes (planner or direct search)
- * into a consistent structure:
- *
- * Canonical (legacy) shape:
- *   { items: [...], meta: {...} }
- *
- * Plus compatibility for newer callers:
- *   { hotels: items, narrative: meta.narrative ?? "" }
- */
-
 export function normalizeSearchResponse(input) {
   if (!input) return empty();
 
-  // planner outputs often contain steps with embedded search results
-  // try several common locations where items/offers may live
+  // Pull from many common shapes
   const candidates = [
     input.items,
     input.results,
     input.offers,
+
+    // nested hotel collections
+    input.hotels?.hotels,
+    input.hotels?.items,
+    input.hotels?.results,
+
+    // planner-style outputs
+    input.top,
+    input.candidates,
+
+    // misc
     input.hotels,
     input.data,
     input.payload,
     input.steps && flattenSteps(input.steps),
   ].filter(Boolean);
 
-  const flat = flattenArray(candidates);
-
-  // last resort: if no obvious array, but input itself looks like a single item
+  const flat = candidates.flatMap(a => (Array.isArray(a) ? a : []));
   const sourceItems = flat.length
     ? flat
     : (looksLikeHotel(input) || looksLikeOffer(input)) ? [input] : [];
 
-  const items = sourceItems
-    .map(coerceItem)     // unwrap step/data/result containers
-    .map(normalizeItem)  // map to canonical fields
-    .filter(Boolean);
+  const items = uniqByIdOrName(
+    sourceItems
+      .map(coerceItem)      // <— RESTORED helper
+      .map(normalizeItem)
+      .filter(Boolean)
+  );
 
   const meta = extractMeta(input);
+  meta.counts = { pools: flat.length, items: items.length };
 
-  // Return both legacy + compatibility fields
   return {
     items,
     meta,
-    // compatibility for callers expecting these:
-    hotels: items,
-    narrative: meta?.narrative ?? ""
+    hotels: items,                     // compatibility alias
+    narrative: meta?.narrative ?? "",
   };
 }
 
@@ -56,53 +54,30 @@ function empty() {
   return { items: [], meta: {}, hotels: [], narrative: "" };
 }
 
-function flattenArray(arrays) {
-  const out = [];
-  for (const a of arrays) {
-    if (Array.isArray(a)) out.push(...a);
-  }
-  return out;
-}
-
 function flattenSteps(steps) {
-  // Handle shapes like [{type:"hotel_search", result:{offers:[...]}}]
   const out = [];
   for (const s of steps || []) {
-    if (!s) continue;
-    const r = s.result || s.output || s.data || null;
-    const pools = [r?.offers, r?.items, r?.results, r?.hotels, r?.data];
-    for (const pool of pools) {
-      if (Array.isArray(pool)) out.push(...pool);
-    }
+    const r = s?.result || s?.output || s?.data || null;
+    const pools = [
+      r?.offers, r?.items, r?.results, r?.hotels, r?.data,
+      r?.hotels?.hotels, r?.hotels?.items, r?.hotels?.results,
+      r?.top, r?.candidates,
+    ];
+    for (const pool of pools) if (Array.isArray(pool)) out.push(...pool);
   }
   return out.length ? out : undefined;
 }
 
 function looksLikeHotel(x = {}) {
-  return !!(
-    x.name ||
-    x.hotelName ||
-    x.propertyName ||
-    x.hotel ||
-    x.property
-  );
+  return !!(x.name || x.hotelName || x.propertyName || x.hotel || x.property);
 }
 
 function looksLikeOffer(x = {}) {
-  return !!(
-    x.price ||
-    x.total ||
-    x.amount ||
-    x.rate ||
-    x.nightlyPrice ||
-    x.pricing ||
-    x.offer ||
-    x.room
-  );
+  return !!(x.price || x.total || x.amount || x.rate || x.nightlyPrice || x.pricing || x.offer || x.room);
 }
 
+// *** RESTORED ***
 function coerceItem(x = {}) {
-  // If planner wrapped the item like {type:"hotel", data:{...}}
   if (x.data && (looksLikeHotel(x.data) || looksLikeOffer(x.data))) return x.data;
   if (x.result && (looksLikeHotel(x.result) || looksLikeOffer(x.result))) return x.result;
   if (x.hotel) return x.hotel;
@@ -113,41 +88,23 @@ function coerceItem(x = {}) {
 function normalizeItem(x = {}) {
   // Name / property
   const name =
-    x.name ||
-    x.hotelName ||
-    x.propertyName ||
-    x.title ||
-    x.property?.name ||
-    x.hotel?.name ||
-    null;
+    x.name || x.hotelName || x.propertyName || x.title ||
+    x.property?.name || x.hotel?.name || null;
 
   // ID
   const id =
-    x.id ||
-    x.hotelId ||
-    x.propertyId ||
-    x.offerId ||
-    x.reference ||
+    x.id || x.hotelId || x.propertyId || x.offerId || x.reference ||
     (name ? slug(`${name}-${x.checkIn || x.check_in || ""}-${x.checkOut || x.check_out || ""}`) : null);
 
   // Price & currency
   const price =
-    num(x.price?.total) ??
-    num(x.price?.amount) ??
-    num(x.price) ??
-    num(x.total) ??
-    num(x.amount) ??
-    num(x.rate?.amount) ??
-    num(x.nightlyPrice) ??
-    num(x.pricing?.total) ??
-    null;
+    num(x.price?.total) ?? num(x.price?.amount) ?? num(x.price) ??
+    num(x.total) ?? num(x.amount) ?? num(x.rate?.amount) ??
+    num(x.nightlyPrice) ?? num(x.pricing?.total) ?? num(x.est_price_gbp) ?? null;
 
   const currency =
-    x.price?.currency ||
-    x.currency ||
-    x.rate?.currency ||
-    x.pricing?.currency ||
-    null;
+    x.price?.currency || x.currency || x.rate?.currency || x.pricing?.currency ||
+    (x.est_price_gbp != null ? "GBP" : null);
 
   // Address / city
   const address =
@@ -155,84 +112,33 @@ function normalizeItem(x = {}) {
       x.address?.line1 || x.address?.address1 || x.address?.street,
       x.address?.line2 || x.address?.address2,
       x.address?.postalCode || x.address?.zip,
-    ]) ||
-    x.address?.freeform ||
-    x.address?.full ||
-    x.location?.address ||
-    null;
+    ]) || x.address?.freeform || x.address?.full || x.location?.address || null;
 
   const city =
-    x.address?.city ||
-    x.city ||
-    x.location?.city ||
-    x.property?.address?.city ||
-    null;
+    x.address?.city || x.city || x.location?.city || x.property?.address?.city || null;
 
   // Geo
   const lat =
-    num(x.location?.lat) ??
-    num(x.location?.latitude) ??
-    num(x.coordinates?.lat) ??
-    num(x.coordinates?.latitude) ??
-    null;
+    num(x.lat) ?? num(x.location?.lat) ?? num(x.location?.latitude) ??
+    num(x.coordinates?.lat) ?? num(x.coordinates?.latitude) ?? null;
 
   const lng =
-    num(x.location?.lng) ??
-    num(x.location?.lon) ??
-    num(x.location?.longitude) ??
-    num(x.coordinates?.lng) ??
-    num(x.coordinates?.lon) ??
-    num(x.coordinates?.longitude) ??
-    null;
+    num(x.lon) ?? num(x.lng) ?? num(x.location?.lng) ?? num(x.location?.lon) ??
+    num(x.location?.longitude) ?? num(x.coordinates?.lng) ?? num(x.coordinates?.lon) ??
+    num(x.coordinates?.longitude) ?? null;
 
-  // Quality signals
-  const stars =
-    num(x.stars) ??
-    num(x.rating?.stars) ??
-    num(x.class) ??
-    num(x.starRating) ??
-    null;
+  // Quality
+  const stars = num(x.stars) ?? num(x.rating?.stars) ?? num(x.class) ?? num(x.starRating) ?? null;
+  const rating = num(x.rating?.value) ?? num(x.reviewScore) ?? num(x.score) ?? num(x.guestRating) ?? null;
 
-  const rating =
-    num(x.rating?.value) ??
-    num(x.reviewScore) ??
-    num(x.score) ??
-    num(x.guestRating) ??
-    null;
+  // Media (fix Google photoreference + strip quotes)
+  const thumbnail = pickThumbnailFrom(x);
 
-  // Media
-  const thumbnail =
-    x.thumbnail ||
-    x.image ||
-    x.images?.[0] ||
-    x.photos?.[0]?.url ||
-    x.media?.[0]?.url ||
-    null;
+  const source = x._source || x.source || (hasHotelSearchFields(x) ? "hotel_search" : "plan");
 
-  // Source (best guess)
-  const source =
-    x._source ||
-    x.source ||
-    (hasHotelSearchFields(x) ? "hotel_search" : "plan");
-
-  // If we didn't get a name or id, consider it unusable
   if (!name && !id) return null;
 
-  return {
-    id,
-    name,
-    price,
-    currency,
-    address,
-    city,
-    lat,
-    lng,
-    stars,
-    rating,
-    thumbnail,
-    source,
-    raw: x,
-  };
+  return { id, name, price, currency, address, city, lat, lng, stars, rating, thumbnail, source, raw: x };
 }
 
 function hasHotelSearchFields(x = {}) {
@@ -241,45 +147,86 @@ function hasHotelSearchFields(x = {}) {
 
 function num(v) {
   if (v == null) return null;
-  const n = Number(v);
+  let s = String(v).trim();
+  // Strip wrapping quotes: "123.45" or '123.45'
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    s = s.slice(1, -1).trim();
+  }
+  // Pull first numeric token (handles "£420", "420 GBP", etc.)
+  const m = s.match(/-?\d+(?:[.,]\d+)?/);
+  if (!m) return null;
+  const n = parseFloat(m[0].replace(",", "."));
   return Number.isFinite(n) ? n : null;
 }
 
+
 function slug(s) {
-  return String(s)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 60);
+  return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
 }
 
 function joinParts(arr) {
   return arr.filter(Boolean).join(", ") || null;
 }
 
-/**
- * Extract useful metadata that callers may show in the UI.
- * This also feeds `narrative` for compatibility return.
- */
+function fixGooglePhotoUrl(u) {
+  if (!u) return u;
+  try {
+    u = String(u).trim();
+    // strip wrapping quotes
+    if ((u.startsWith('"') && u.endsWith('"')) || (u.startsWith("'") && u.endsWith("'"))) {
+      u = u.slice(1, -1);
+    }
+    // correct Google Places param
+    if (u.includes("/maps.googleapis.com/maps/api/place/photo") && u.includes("photo_reference=")) {
+      u = u.replace("photo_reference=", "photoreference=");
+    }
+  } catch {}
+  return u;
+}
+
+function pickThumbnailFrom(x = {}) {
+  const candidates = [
+    x.thumbnail,
+    x.image,
+    Array.isArray(x.images) ? x.images[0] : null,
+    Array.isArray(x.photos) ? (x.photos[0]?.url || x.photos[0]) : null,
+    Array.isArray(x.media) ? (x.media[0]?.url || x.media[0]) : null,
+  ].filter(Boolean);
+
+  const first = candidates[0];
+  if (!first) return null;
+
+  if (typeof first === "object") {
+    const objUrl = first.url || first.src || first.href || first.link || null;
+    return fixGooglePhotoUrl(objUrl);
+  }
+  return fixGooglePhotoUrl(String(first));
+}
+
+function uniqByIdOrName(arr = []) {
+  const map = new Map();
+  for (const x of arr) {
+    if (!x) continue;
+    const key =
+      (x.id && String(x.id).toLowerCase()) ||
+      (x.name && String(x.name).toLowerCase()) ||
+      null;
+    if (key && !map.has(key)) map.set(key, x);
+    if (!key) map.set(`__idx_${map.size}`, x);
+  }
+  return Array.from(map.values());
+}
+
 function extractMeta(input = {}) {
-  // Try multiple likely keys for LLM narration / notes
   const narrative =
     input.narrative ||
     input.summary ||
     input.text ||
     input.message ||
+    input.hotels?.narrative ||
     (Array.isArray(input.notes) ? input.notes.join(" • ") : "") ||
     "";
-
-  // Surface any tool/agent info if present
-  const agent =
-    input.agent ||
-    input.tool ||
-    input.type ||
-    input.workflow ||
-    null;
-
-  // You can add more fields here as needed (tokens, timing, trace IDs, etc.)
+  const agent = input.agent || input.tool || input.type || input.workflow || null;
   return { narrative, agent };
 }
 
