@@ -108,17 +108,27 @@ async function searchHotels(payload = {}) {
       .toUpperCase();
 
   const toolArgs = {
-    stay: {
-      check_in: checkIn,
-      check_out: checkOut,
-      city_code: toCityCode(city_code),
-      adults,
-      currency,
-      wants_indoor_pool: !!(payload.wantsIndoorPool ?? stay.wants_indoor_pool),
-      max_price_gbp: Number(payload.maxPrice ?? stay.max_price_gbp ?? 0) || null,
-    },
-    top_n: payload.topN ?? 5,
-  };
+  stay: {
+    check_in: checkIn,
+    check_out: checkOut,
+    adults,
+    currency,
+  },
+  city_code: toCityCode(city_code),
+  neighborhood: payload.neighborhood ?? stay.neighborhood ?? undefined,
+  budget_max:
+    Number(
+      payload.maxPrice ??
+      payload.budget_max ??
+      payload.max_price_gbp ?? 
+      stay.budget_max ??
+      stay.max_price_gbp ??
+      0
+    ) || undefined,
+  preferences: (payload.wantsIndoorPool ?? stay.wants_indoor_pool) ? ["indoor_pool"] : [],
+  use_responder: true,
+  top_n: payload.topN ?? 5,
+};
 
 
   console.log("Structured call args:", toolArgs);
