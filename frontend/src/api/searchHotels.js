@@ -111,23 +111,14 @@ async function searchHotels(payload = {}) {
   stay: {
     check_in: checkIn,
     check_out: checkOut,
+    city_code: toCityCode(city_code || ""),       // ✅ move inside stay
     adults,
     currency,
+    wants_indoor_pool: !!(payload.wantsIndoorPool ?? stay.wants_indoor_pool), // ✅ boolean flag
+    max_price_gbp: Number(payload.maxPrice ?? stay.max_price_gbp ?? 0) || null, // ✅ budget key the backend expects
   },
-  city_code: toCityCode(city_code),
-  neighborhood: payload.neighborhood ?? stay.neighborhood ?? undefined,
-  budget_max:
-    Number(
-      payload.maxPrice ??
-      payload.budget_max ??
-      payload.max_price_gbp ?? 
-      stay.budget_max ??
-      stay.max_price_gbp ??
-      0
-    ) || undefined,
-  preferences: (payload.wantsIndoorPool ?? stay.wants_indoor_pool) ? ["indoor_pool"] : [],
-  use_responder: true,
   top_n: payload.topN ?? 5,
+  use_responder: true,
 };
 
 
