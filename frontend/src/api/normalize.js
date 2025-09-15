@@ -42,7 +42,15 @@ export function normalizeSearchResponse(input) {
 
   const meta = extractMeta(env);
   meta.counts = { pools: flat.length, items: items.length };
-
+  // Expose budget filter counts nicely if present
+  const budget = env?.meta?.budget_filter || null;
+  if (budget) {
+    meta.budget = budget;                      // existing you already had
+    meta.counts.under_budget = budget.under_budget ?? null;
+    if (typeof env?.meta?.total_in === "number") {
+       meta.counts.total_in = env.meta.total_in;
+    }
+  }
   return {
     items,
     meta,
@@ -101,13 +109,16 @@ function normalizeItem(x = {}) {
 
   // Price & currency
   const price =
+    num(x.est_price_gbp) ??                            // ← prefer normalized per-night
     num(x.price?.total) ?? num(x.price?.amount) ?? num(x.price) ??
     num(x.total) ?? num(x.amount) ?? num(x.rate?.amount) ??
-    num(x.nightlyPrice) ?? num(x.pricing?.total) ?? num(x.est_price_gbp) ?? null;
+    num(x.nightlyPrice) ?? num(x.pricing?.total) ?? null;
+    
 
   const currency =
-    x.price?.currency || x.currency || x.rate?.currency || x.pricing?.currency ||
-    (x.est_price_gbp != null ? "GBP" : null);
+    (x.est_price_gbp != null ? "GBP" : null) ||
+    x.price?.currency || x.currency || x.rate?.currency || x.pricing?.currency;
+    
 
   // Address / city
   const address =

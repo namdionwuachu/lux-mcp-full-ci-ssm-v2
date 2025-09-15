@@ -2,6 +2,22 @@
 import { callTool } from "./rpc";
 import { normalizeSearchResponse } from "./normalize";
 
+// Helper to normalize city input to 3-letter codes
+const toCityCode = (input = "") => {
+  const s = String(input).trim().toUpperCase();
+  const map = {
+    "LONDON": "LON",
+    "PARIS": "PAR",
+    "NEW YORK": "NYC",
+    "LOS ANGELES": "LAX",
+    "DUBAI": "DXB",
+    "SINGAPORE": "SIN",
+  };
+  if (s.length === 3) return s;
+  return map[s] || s.slice(0, 3);
+};
+
+
 /**
  * Call MCP "hotel_search" and normalize the response for the UI.
  * Returns: { items, hotels, narrative, meta, _raw }
@@ -92,11 +108,18 @@ async function searchHotels(payload = {}) {
       .toUpperCase();
 
   const toolArgs = {
-    stay: { check_in: checkIn, check_out: checkOut },
-    city_code,
-    adults,
-    currency,
+    stay: {
+      check_in: checkIn,
+      check_out: checkOut,
+      city_code: toCityCode(city_code),
+      adults,
+      currency,
+      wants_indoor_pool: !!(payload.wantsIndoorPool ?? stay.wants_indoor_pool),
+      max_price_gbp: Number(payload.maxPrice ?? stay.max_price_gbp ?? 0) || null,
+    },
+    top_n: payload.topN ?? 5,
   };
+
 
   console.log("Structured call args:", toolArgs);
 
