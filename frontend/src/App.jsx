@@ -35,17 +35,17 @@ export default function App() {
 
         const query = parts.join(", ").replace(/\s+,/g, ",");
 
-        const check_in  = checkIn;    // e.g. "2025-10-31"
-        const check_out = checkOut;   // e.g. "2025-11-03"
-        const city_code = city.toUpperCase(); // ✅ Use 'city' state variable that EXISTS
-        const adults = 2;                     // ✅ Use fixed value (or create state variable)
-        const currency = "GBP";               // ✅ Use fixed value (or create state variable)
-
         const result = await searchHotels({
-          stay: { check_in, check_out },
-          city_code,
-          adults,
-          currency,
+          stay: {
+            check_in: checkIn,
+            check_out: checkOut,
+            city_code: city.toUpperCase(),      // searchHotels.js will normalize with toCityCode()
+            adults: 2,
+            currency: "GBP",
+            max_price_gbp: Number(budget) || null,
+            wants_indoor_pool: !!indoorPool,
+          },
+          topN: 5,
         });
 
         // normalizeSearchResponse returns { hotels, narrative }
