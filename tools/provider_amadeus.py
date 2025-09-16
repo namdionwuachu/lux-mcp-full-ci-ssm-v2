@@ -506,6 +506,15 @@ def _offers_by_hotel_ids_sdk(
 # ================== Public functions ==================
 logger.info(f"[amadeus] provider_loaded v2 BASE_URL={BASE_URL} HAVE_SDK={HAVE_SDK} SECRET_NAME={SECRET_NAME}")
 
+logger.info({
+  "stage": "amadeus_boot",
+  "BASE_URL": BASE_URL,
+  "USE_FALLBACK_GEO": USE_FALLBACK_GEO,
+  "ENABLE_PLACES_PHOTOS": ENABLE_PLACES_PHOTOS,
+  "OFFERS_CHUNK_SIZE": OFFERS_CHUNK_SIZE,
+  "AMADEUS_MAX_CHUNKS": AMADEUS_MAX_CHUNKS,
+})
+
 class HotelCard(TypedDict, total=False):
     id: str
     name: str
@@ -544,17 +553,23 @@ def search_hotels(params: Dict[str, Any], *, context=None) -> SearchResult:
     adults     = int((params.get("adults") or stay.get("adults") or 2))
     rooms      = int((params.get("roomQuantity") or stay.get("roomQuantity") or 1))
     currency   = (params.get("currency") or stay.get("currency") or "GBP").upper()
-
+    country_code = (
+    params.get("country_code")
+    or stay.get("country_code")
+    or params.get("country")      # tolerate "country"
+    or stay.get("country")
+)
+    
     resolved_center = None
     if not city_code and city_name:
-        city_code, resolved_center = _resolve_city(city_name, country_cc)
+        city_code, resolved_center = _resolve_city(city_name, country_code)
 
     if (lat is None or lon is None) and resolved_center:
         lat, lon = resolved_center
 
     logger.info({
         "stage": "amadeus_search_params",
-        "city": city_name, "country": country_cc, "city_code": city_code,
+        "city": city_name, "country": country_code, "city_code": city_code,
         "lat": lat, "lon": lon, "radius_km": radius_km,
         "adults": adults, "rooms": rooms, "currency": currency
     })
