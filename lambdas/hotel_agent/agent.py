@@ -65,7 +65,7 @@ def run(task: Dict[str, Any]) -> Dict[str, Any]:
 
     # ⬇️ NEW: Enrich with Google Places (URL + photos + coords fallback)
     if (
-        os.getenv("ENABLE_PLACES_PHOTOS", "0").lower() in ("1", "true", "yes")
+        os.getenv("ENABLE_PLACES_PHOTOS", "1").lower() in ("1", "true", "yes")
         and callable(enrich_hotels_with_places)
     ):
         try:
