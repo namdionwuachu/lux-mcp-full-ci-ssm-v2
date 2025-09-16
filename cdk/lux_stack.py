@@ -33,7 +33,7 @@ class LuxStack(Stack):
             "HOTEL_AGENT_DIRECT": os.getenv("HOTEL_AGENT_DIRECT", "true"),
             "ALLOWLIST_DOMAINS": os.getenv("ALLOWLIST_DOMAINS", ""),
             # Planner option: include responder_narrate as the last step
-            "INCLUDE_RESPONDER": os.getenv("INCLUDE_RESPONDER", "true"),
+            "INCLUDE_RESPONDER": os.getenv("INCLUDE_RESPONDER", "false"),
 
             # Amadeus provider knobs
             "AMADEUS_MAX_HOTELS": os.getenv("AMADEUS_MAX_HOTELS", "60"),
