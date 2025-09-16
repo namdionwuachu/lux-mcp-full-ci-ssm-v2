@@ -30,6 +30,7 @@ class LuxStack(Stack):
             "AMADEUS_BASE_URL": os.getenv("AMADEUS_BASE_URL", "https://test.api.amadeus.com"),
             "AMADEUS_SECRET_NAME": os.getenv("AMADEUS_SECRET_NAME", "/lux/amadeus/credentials"),
             "HOTEL_PROVIDER_ORDER": os.getenv("HOTEL_PROVIDER_ORDER", "amadeus"),
+            "HOTEL_AGENT_DIRECT": os.getenv("HOTEL_AGENT_DIRECT", "true"),
             "ALLOWLIST_DOMAINS": os.getenv("ALLOWLIST_DOMAINS", ""),
             # Planner option: include responder_narrate as the last step
             "INCLUDE_RESPONDER": os.getenv("INCLUDE_RESPONDER", "true"),
@@ -37,6 +38,7 @@ class LuxStack(Stack):
             # Amadeus provider knobs
             "AMADEUS_MAX_HOTELS": os.getenv("AMADEUS_MAX_HOTELS", "60"),
             "AMADEUS_TARGET_RESULTS": os.getenv("AMADEUS_TARGET_RESULTS", "30"),
+            "AMADEUS_USE_FALLBACK": os.getenv("AMADEUS_USE_FALLBACK", "0"),
             "AMADEUS_TIME_BUDGET_SEC": os.getenv("AMADEUS_TIME_BUDGET_SEC", "17"),
             "AMADEUS_OFFERS_CHUNK_SIZE": os.getenv("AMADEUS_OFFERS_CHUNK_SIZE", "12"), # lowered from 20 → 12
             "AMADEUS_INTER_CHUNK_SLEEP": os.getenv("AMADEUS_INTER_CHUNK_SLEEP", "0.15"),
@@ -45,7 +47,7 @@ class LuxStack(Stack):
 
             # Google Places (consistent pattern: pass secret NAME, not key)
             "GOOGLE_SECRET_NAME": os.getenv("GOOGLE_SECRET_NAME", "/lux/google/places_api_key"),
-            "ENABLE_PLACES_PHOTOS": os.getenv("ENABLE_PLACES_PHOTOS", "1"),
+            "ENABLE_PLACES_PHOTOS": os.getenv("ENABLE_PLACES_PHOTOS", "0"),
             "MAX_PHOTOS_PER_HOTEL": os.getenv("MAX_PHOTOS_PER_HOTEL", "4"),
             
             # align other knobs your provider actually uses:

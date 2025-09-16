@@ -109,22 +109,36 @@ def lambda_handler(event, context):
             hotels = amadeus.search_hotels(query)  # already-normalized cards (list)
             logger.info({"stage": "handler_hotels_count", "count": len(hotels)})
 
-            # >>> added: build base response and optionally add AI narrative
-            resp = {"status": "ok", "hotels": hotels}
+            
+            # --- Normalize provider output to a list (some adapters return {"status":"ok","hotels":[...]})
+            hotel_list = None
+            if isinstance(hotels, dict):
+                hotel_list = hotels.get("hotels") or hotels.get("data") or []
+            elif isinstance(hotels, list):
+                hotel_list = hotels
+            else:
+                hotel_list = []
 
-            use_responder = bool(task.get("use_responder"))  # flag from client/UI
-            if use_responder and hotels:
-                # take top 5 and pass minimal fields to narrator
+            # --- Always return the wrapped envelope that the frontend expects
+            resp = {
+                "status": "ok",
+                "hotels": {"status": "ok", "hotels": hotel_list},
+                "meta": {"path": "direct"}  # breadcrumb so you can verify route in curl
+            }
+
+            # --- If empty, don't call narrator; add a clear reason
+            if not hotel_list:
+                resp["meta"]["reason"] = "provider_zero"
+                resp["narrative"] = "No live availability from suppliers for those dates/location."
+                return _response(200, resp)
+
+            # --- Only call the responder if explicitly requested and we have hotels
+            use_responder = bool(task.get("use_responder"))
+            if use_responder:
                 top = [
-                    {
-                        "name": h.get("name"),
-                        "id": h.get("id"),
-                        "est_price_gbp": h.get("est_price_gbp"),  # keep legacy key for now
-                    }
-                    for h in hotels[:5]
+                    {"name": h.get("name"), "id": h.get("id"), "est_price_gbp": h.get("est_price_gbp")}
+                    for h in hotel_list[:5]
                 ]
-
-                # call the narrator via the existing agent.run JSON‑RPC
                 narr_env = {
                     "jsonrpc": "2.0",
                     "id": "rn",
@@ -133,7 +147,6 @@ def lambda_handler(event, context):
                 }
                 try:
                     narr_out = run(narr_env) or {}
-                    # run(...) typically returns {"result": {...}}
                     narr_result = narr_out.get("result") or narr_out
                     narrative_text = _extract_narrative(narr_result)
                     if narrative_text:

@@ -121,6 +121,7 @@ async function searchHotels(payload = {}) {
   use_responder: true,
 };
 
+  console.log("[OUT toolArgs.stay]", JSON.stringify(toolArgs.stay, null, 2));
 
   console.log("Structured call args:", toolArgs);
 

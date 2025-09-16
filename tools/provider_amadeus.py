@@ -282,11 +282,11 @@ def _nights(ci: Optional[str], co: Optional[str]) -> int:
     except Exception:
         return 1
 
-def _best_total_gbp(offers: List[dict]) -> Optional[float]:
+def _best_total(offers: List[dict], want: str = "GBP") -> Optional[float]:
     best = None
     for off in offers or []:
-        p = off.get("price", {})
-        if p.get("currency") == "GBP":
+        p = off.get("price", {}) or {}
+        if (p.get("currency") or "").upper() == (want or "GBP").upper():
             amt = p.get("total") or p.get("base")
             try:
                 v = float(amt)
@@ -295,6 +295,7 @@ def _best_total_gbp(offers: List[dict]) -> Optional[float]:
             except Exception:
                 pass
     return best
+
 
 def _norm_amenities(hotel: dict, offers: List[dict]) -> List[str]:
     am = (hotel.get("amenities") or [])[:]
@@ -423,19 +424,17 @@ def _maps_url(name: Optional[str], city_for_url: str, lat: Optional[float], lon:
     return f"https://www.google.com/maps/search/?api=1&query={q}"
 
 def _extract_images_from_offers(offers: List[Dict[str, Any]]) -> List[str]:
-    imgs: List[str] = []
+    seen, out = set(), []
     for o in offers or []:
         hotel_blk = o.get("hotel") or {}
         media = hotel_blk.get("media") or o.get("media") or []
         for m in media:
             u = m.get("uri") or m.get("url")
-            if u:
-                imgs.append(u)
-    out, seen = [], set()
-    for u in imgs:
-        if u in seen: continue
-        seen.add(u); out.append(u)
-    return out
+            if u and u not in seen:
+                seen.add(u)
+                out.append(u)
+    return out[:6]
+
 
 def _places_photos(name: Optional[str], city_for_url: str, lat: Optional[float], lon: Optional[float]) -> List[str]:
     if not ENABLE_PLACES_PHOTOS or not GOOGLE_PLACES_API_KEY:
@@ -548,7 +547,8 @@ def search_hotels(params: Dict[str, Any], *, context=None) -> SearchResult:
 
     adults = int(params.get("adults", 2))
     rooms = int(params.get("roomQuantity", 1))
-    currency = params.get("currency", "GBP")
+    currency = (params.get("currency") or "GBP").upper()
+
 
     resolved_center = None
     if not city_code and city_name:
@@ -641,8 +641,8 @@ def search_hotels(params: Dict[str, Any], *, context=None) -> SearchResult:
             geo = hotel.get("geoCode") or {}
             hid = hotel.get("hotelId") or hotel.get("id") or ""
 
-            total_gbp = _best_total_gbp(offer_list)
-            per_night = (total_gbp / nights) if (total_gbp and nights > 0) else None
+            total = _best_total(offer_list, want=currency)
+            per_night = (total / nights) if (total and nights > 0) else None
 
             lat_val = geo.get("latitude") or (meta_map.get(hid) or {}).get("lat")
             lon_val = geo.get("longitude") or (meta_map.get(hid) or {}).get("lon")
