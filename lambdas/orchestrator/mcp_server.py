@@ -285,29 +285,45 @@ def _tools_call(req):
             hs = _invoke(HOTEL_FN, payload) or {}
             hotels = (((hs or {}).get("hotels") or {}).get("hotels")) or []
 
-            # ---- Step 2: Budget filter
-            if not BUDGET_FN:
-                return {"content": [{"type": "text", "text": "BUDGET_FN env not set"}], "isError": True}
+            
+            # ---- Step 2: (conditional) budget filter; never drop to empty
             top_n = int(args.get("top_n", 5) or 5)
-            bf_in = {
-                "hotels": hotels,
-                "max_price_gbp": stay.get("max_price_gbp"),
-                "check_in": stay.get("check_in"),
-                "check_out": stay.get("check_out"),
-                "top_n": top_n,
-                "task_id": rid,
-            }
-            bf = _invoke(BUDGET_FN, bf_in) or {}
-            top = bf.get("top") or bf.get("ranked") or []
-            candidates = bf.get("candidates") or top
-            meta = bf.get("meta") or {"total_in": len(hotels), "under_budget": len(top)}
+            max_price = stay.get("max_price_gbp")
+
+            if max_price is not None:
+                if not BUDGET_FN:
+                    return {"content": [{"type": "text", "text": "BUDGET_FN env not set"}], "isError": True}
+                bf_in = {
+                    "hotels": hotels,
+                    "max_price_gbp": max_price,
+                    "check_in": stay.get("check_in"),
+                    "check_out": stay.get("check_out"),
+                    "top_n": top_n,
+                    "task_id": rid,
+                }
+                bf = _invoke(BUDGET_FN, bf_in) or {}
+                # Prefer budget results, but NEVER return empty if we had hotels
+                candidates = bf.get("candidates") or bf.get("top") or hotels
+                top = (bf.get("top") or candidates)[:top_n]
+                if not top and hotels:
+                    top = hotels[:top_n]
+                meta = {**(bf.get("meta") or {}), "total_in": len(hotels), "budget_applied": True}
+            else:
+                # No budget provided → pass hotels through
+                candidates = hotels
+                top = hotels[:top_n]
+                meta = {"total_in": len(hotels), "budget_applied": False}
 
             result = {
                 "status": "ok",
-                "hotels": {"status": "ok", "hotels": top},  # GUI cards = under-budget only
-                "meta": {"budget_filter": {"under_budget": len([h for h in candidates if h.get('passes_budget')])}},
+                "hotels": {"status": "ok", "hotels": top},
+                "meta": {
+                    "budget_filter": {"under_budget": len([h for h in candidates if h.get('passes_budget')])},
+                    **meta
+                },
             }
 
+            
             # ---- Step 3: Optional responder (in-process)
             if INCLUDE_RESPONDER:
                 try:
