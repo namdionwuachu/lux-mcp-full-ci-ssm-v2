@@ -126,6 +126,15 @@ def lambda_handler(event, context):
                 "meta": {"path": "direct"}  # breadcrumb so you can verify route in curl
             }
 
+            # >>> debug preview (log what you're about to return)
+            safe_preview = [
+                {k: v for k, v in h.items() if k in ("name", "hotel_id", "id", "currency", "est_price", "est_price_gbp")}
+                for h in hotel_list[:3]
+            ]
+            logger.info({"stage": "return_preview", "hotels_count": len(hotel_list), "preview": safe_preview})
+            
+            
+            
             # --- If empty, don't call narrator; add a clear reason
             if not hotel_list:
                 resp["meta"]["reason"] = "provider_zero"
@@ -154,6 +163,9 @@ def lambda_handler(event, context):
                         resp["use_responder"] = True
                 except Exception as narr_e:
                     logger.warning("Narrator failed: %s", narr_e)
+                    
+        # >>> (optional) log again after narrator, to confirm final shape/count
+            logger.info({"stage": "return_preview_final", "hotels_count": len(resp["hotels"]["hotels"])})
 
             return _response(200, resp)
 
