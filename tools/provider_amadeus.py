@@ -537,18 +537,13 @@ def search_hotels(params: Dict[str, Any], *, context=None) -> SearchResult:
     lon = loc.get("lon", params.get("lon"))
     radius_km = int(loc.get("radius_km", params.get("radius_km", LUX_RADIUS_KM_DEFAULT)))
 
-    city_code = params.get("city_code") or params.get("cityCode")
-    city_name = params.get("city") or params.get("city_name")
-    country_cc = (
-        params.get("country_code")
-        or params.get("country")
-        or loc.get("country_code")
-    )
-
-    adults = int(params.get("adults", 2))
-    rooms = int(params.get("roomQuantity", 1))
-    currency = (params.get("currency") or "GBP").upper()
-
+    city_code  = (params.get("city_code") or params.get("cityCode") or
+              stay.get("city_code") or stay.get("cityCode"))
+    city_name  = (params.get("city") or params.get("city_name") or
+                stay.get("city")   or stay.get("city_name"))
+    adults     = int((params.get("adults") or stay.get("adults") or 2))
+    rooms      = int((params.get("roomQuantity") or stay.get("roomQuantity") or 1))
+    currency   = (params.get("currency") or stay.get("currency") or "GBP").upper()
 
     resolved_center = None
     if not city_code and city_name:
@@ -681,8 +676,16 @@ def search_hotels(params: Dict[str, Any], *, context=None) -> SearchResult:
             })
 
         cards.sort(key=lambda x: (float("inf") if x["est_price_gbp"] is None else x["est_price_gbp"]))
-        logger.info({"stage": "amadeus_cards_total", "count": len(cards)})
-        return {"status": "ok", "hotels": cards}
+        debug_meta = {
+            "city_code": city_code,
+            "city_name": city_name,
+            "listed_hotel_ids": len(hotel_ids),
+            "offers_returned": len(offers),
+            "cards_built": len(cards),
+        }
+        logger.info({"stage": "amadeus_debug_counts", **debug_meta})
+        return {"status": "ok", "hotels": cards, "meta": {"debug": debug_meta}}
+    
 
     except Exception as e:
         logger.warning({"stage": "amadeus_offers_by_ids_failed", "error": str(e)})

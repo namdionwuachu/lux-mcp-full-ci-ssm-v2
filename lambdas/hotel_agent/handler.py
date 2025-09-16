@@ -82,8 +82,8 @@ def lambda_handler(event, context):
 
             # allow city or city_code — provider can decide what to use
             city = (task.get("city") or task.get("destination") or "").strip()
-            city_code = (task.get("city_code") or "").strip().upper()  # >>> added (non‑breaking)
-            country_code = (task.get("country_code") or "").strip().upper()
+            city_code = (task.get("city_code") or stay.get("city_code") or "").strip().upper()
+            country_code = (task.get("country_code") or stay.get("country_code") or "").strip().upper()
             loc = task.get("location") or {}
 
             query = {
