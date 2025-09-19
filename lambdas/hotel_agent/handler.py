@@ -106,6 +106,8 @@ def lambda_handler(event, context):
             query["location"] = {k: v for k, v in (query["location"] or {}).items() if v is not None} or None
             query = {k: v for k, v in query.items() if v not in (None, {}, [])}
 
+            # FIXED: Call amadeus.search_hotels(query) - this was missing!
+            hotels = amadeus.search_hotels(query)
             
             # --- Normalize provider output to a list (some adapters return {"status":"ok","hotels":[...]})
             hotel_list = None
@@ -128,12 +130,12 @@ def lambda_handler(event, context):
             # >>> debug preview (log what you're about to return)
             for h in hotel_list[:3]:
                 if not h.get("est_price") or not h.get("currency"):
-                logger.info({
-                    "stage": "preview_missing_price",
-                    "id": h.get("id"),
-                    "raw_price": h.get("est_price"),
-                    "currency": h.get("currency")
-                })
+                    logger.info({
+                        "stage": "preview_missing_price",
+                        "id": h.get("id"),
+                        "raw_price": h.get("est_price"),
+                        "currency": h.get("currency")
+                    })
                       
             
             safe_preview = [
@@ -173,7 +175,7 @@ def lambda_handler(event, context):
                 except Exception as narr_e:
                     logger.warning("Narrator failed: %s", narr_e)
                     
-        # >>> (optional) log again after narrator, to confirm final shape/count
+            # >>> (optional) log again after narrator, to confirm final shape/count
             logger.info({"stage": "return_preview_final", "hotels_count": len(resp["hotels"]["hotels"])})
 
             return _response(200, resp)
