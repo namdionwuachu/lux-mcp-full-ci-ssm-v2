@@ -130,8 +130,6 @@ class LuxStack(Stack):
         google_places_secret.grant_read(hotel_fn)
         amadeus_secret.grant_read(hotel_fn)
         
-        # ← add this exact line:
-        hotel_fn.add_environment("HOTELS_CURRENCY", "GBP")
 
         # ---- BudgetAgent
         budget_fn = _lambda.Function(
