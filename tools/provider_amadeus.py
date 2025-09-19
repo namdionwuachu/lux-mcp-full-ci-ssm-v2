@@ -501,30 +501,35 @@ def _offers_by_hotel_ids_sdk(
         if deadline_ts and time.time() >= deadline_ts:
             logger.info({"stage": "amadeus_deadline_sdk", "collected": len(results)})
             break
+
         chunk = ",".join(deduped[i : i + OFFERS_CHUNK_SIZE])
-        resp = amadeus_client.shopping.hotel_offers_search.get(
-        kwargs = dict(
-            hotelIds=chunk,
-            adults=params_base["adults"],
-            checkInDate=params_base["checkInDate"],
-            checkOutDate=params_base["checkOutDate"],
-            roomQuantity=params_base["roomQuantity"],
-            bestRateOnly=params_base["bestRateOnly"],
-        )
-        # Only include currency if you set HOTELS_CURRENCY (and it propagated into params_base)
-        if "currency" in params_base and params_base["currency"]:
+
+        # Build safe kwargs (stringify where Amadeus expects strings)
+        kwargs = {
+            "hotelIds": chunk,
+            "adults": str(params_base["adults"]),
+            "checkInDate": params_base["checkInDate"],
+            "checkOutDate": params_base["checkOutDate"],
+            "roomQuantity": str(params_base.get("roomQuantity", 1)),
+            "bestRateOnly": "true" if params_base.get("bestRateOnly", True) else "false",
+        }
+        # Only include currency if set
+        if params_base.get("currency"):
             kwargs["currency"] = params_base["currency"]
 
         resp = amadeus_client.shopping.hotel_offers_search.get(**kwargs)
-
         part = resp.data or []
         logger.info({"stage": "amadeus_offers_chunk_sdk", "chunk_size": len(chunk.split(",")), "returned": len(part)})
         results.extend(part)
+
         if target_results and len(results) >= target_results:
             logger.info({"stage": "amadeus_target_hit_sdk", "target": target_results})
             break
+
     logger.info({"stage": "amadeus_offers_total_sdk", "count": len(results)})
     return results
+
+
 
 # ================== Public functions ==================
 logger.info(f"[amadeus] provider_loaded v2 BASE_URL={BASE_URL} HAVE_SDK={HAVE_SDK} SECRET_NAME={SECRET_NAME}")
