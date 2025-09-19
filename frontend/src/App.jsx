@@ -4,6 +4,40 @@ import { useState } from "react";
 import SearchResults from "./components/SearchResults";
 import { searchHotels } from "./api/searchHotels";
 
+// ADD THIS FUNCTION at the top
+const getCurrencyForCityCode = (cityCode) => {
+  const cityToCurrencyMap = {
+    // Europe
+    'LON': 'GBP',  // London
+    'PAR': 'EUR',  // Paris  
+    'ROM': 'EUR',  // Rome
+    'BCN': 'EUR',  // Barcelona
+    'AMS': 'EUR',  // Amsterdam
+    'BER': 'EUR',  // Berlin
+    'VIE': 'EUR',  // Vienna
+    'ZUR': 'CHF',  // Zurich
+    
+    // Middle East
+    'DXB': 'AED',  // Dubai
+    'DOH': 'QAR',  // Doha
+    'RUH': 'SAR',  // Riyadh
+    
+    // North America  
+    'NYC': 'USD',  // New York
+    'LAX': 'USD',  // Los Angeles
+    'MIA': 'USD',  // Miami
+    'YYZ': 'CAD',  // Toronto
+    
+    // Asia
+    'NRT': 'JPY',  // Tokyo
+    'SIN': 'SGD',  // Singapore
+    'HKG': 'HKD',  // Hong Kong
+    'BKK': 'THB',  // Bangkok
+  };
+  
+  return cityToCurrencyMap[cityCode?.toUpperCase()] || 'GBP';
+};
+
 export default function App() {
   const [city, setCity] = useState("London");       // Planner: city name ok. Structured: expects IATA city code (e.g., LON, PAR).
   const [checkIn, setCheckIn] = useState("2025-09-01");
@@ -41,7 +75,7 @@ export default function App() {
             check_out: checkOut,
             city_code: city.toUpperCase(),      // searchHotels.js will normalize with toCityCode()
             adults: 2,
-            currency: "GBP",
+            currency: getCurrencyForCityCode(city.toUpperCase()), // CHANGED: was "GBP"
             max_price_gbp: Number(budget) || null,
             wants_indoor_pool: !!indoorPool,
           },
@@ -75,7 +109,7 @@ export default function App() {
           max_price_gbp: Number(budget) || undefined,
           wants_indoor_pool: !!indoorPool
         },
-        currency: "GBP"
+        currency: getCurrencyForCityCode(city_code) // CHANGED: was "GBP"
       };
 
       const result = await searchHotels(payload);
@@ -184,5 +218,4 @@ export default function App() {
     </main>
   );
 }
-
 
