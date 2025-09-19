@@ -75,7 +75,7 @@ export default function App() {
             check_out: checkOut,
             city_code: city.toUpperCase(),      // searchHotels.js will normalize with toCityCode()
             adults: 2,
-            currency: getCurrencyForCityCode(city.toUpperCase()), // CHANGED: was "GBP"
+            currency: getCurrencyForCityCode(city.toUpperCase()), // ✅ This works
             max_price_gbp: Number(budget) || null,
             wants_indoor_pool: !!indoorPool,
           },
@@ -106,10 +106,11 @@ export default function App() {
           check_out: checkOut,
           city_code,
           adults: 2,
+          currency: getCurrencyForCityCode(city_code), // 🔧 FIXED: Move currency inside stay object
           max_price_gbp: Number(budget) || undefined,
           wants_indoor_pool: !!indoorPool
-        },
-        currency: getCurrencyForCityCode(city_code) // CHANGED: was "GBP"
+        }
+        // 🔧 REMOVED: currency: getCurrencyForCityCode(city_code) - was outside stay object
       };
 
       const result = await searchHotels(payload);
