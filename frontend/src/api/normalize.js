@@ -84,7 +84,7 @@ function looksLikeHotel(x = {}) {
 }
 
 function looksLikeOffer(x = {}) {
-  return !!(x.price || x.total || x.amount || x.rate || x.nightlyPrice || x.pricing || x.offer || x.room);
+  return !!(x.est_price || x.total || x.amount || x.rate || x.nightlyPrice || x.pricing || x.offer || x.room);
 }
 
 // *** RESTORED ***
@@ -109,6 +109,7 @@ function normalizeItem(x = {}) {
 
   // Price & currency
   const price =
+    num(x.est_price) ??                                // ← NEW backend field
     num(x.est_price_gbp) ??                            // ← prefer normalized per-night
     num(x.price?.total) ?? num(x.price?.amount) ?? num(x.price) ??
     num(x.total) ?? num(x.amount) ?? num(x.rate?.amount) ??
@@ -116,8 +117,12 @@ function normalizeItem(x = {}) {
     
 
   const currency =
+    x.currency ||
+    x.price?.currency ||
+    x.rate?.currency ||
+    x.pricing?.currency ||
     (x.est_price_gbp != null ? "GBP" : null) ||
-    x.price?.currency || x.currency || x.rate?.currency || x.pricing?.currency;
+    "GBP";
     
 
   // Address / city
@@ -152,7 +157,7 @@ function normalizeItem(x = {}) {
 
   if (!name && !id) return null;
 
-  return { id, name, price, currency, address, city, lat, lng, stars, rating, thumbnail, source, raw: x };
+  return { id, name, price, est_price: price, currency, address, city, lat, lng, stars, rating, thumbnail, source, raw: x };
 }
 
 function hasHotelSearchFields(x = {}) {
