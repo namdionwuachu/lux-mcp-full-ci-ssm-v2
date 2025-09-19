@@ -89,9 +89,32 @@ export default function HotelCard({ hotel = {}, index }) {
   const stars = toNum(hotel.stars) ?? toNum(hotel.rating?.stars) ?? toNum(hotel.class) ?? null;
   const rating = toNum(hotel.rating) ?? toNum(hotel.rating?.value) ?? toNum(hotel.reviewScore) ?? toNum(hotel.score) ?? toNum(hotel.guestRating) ?? null;
 
-  // Price (normalized or raw fallback)
-  const price = parsePrice(hotel.price) ?? parsePrice(hotel.raw?.est_price_gbp);
-  const currency = (hotel.currency || "GBP").toUpperCase();
+  // Price (normalized or raw fallback) - supports new backend shape
+  const price =
+    // prefer proper numbers without re-parsing
+    (typeof hotel?.price === "number" ? hotel.price : undefined) ??
+    (typeof hotel?.est_price === "number" ? hotel.est_price : undefined) ??
+    (typeof hotel?.raw?.est_price === "number" ? hotel.raw.est_price : undefined) ??
+    (typeof hotel?.raw?.est_price_gbp === "number" ? hotel.raw.est_price_gbp : undefined) ??
+    (typeof hotel?.bestOffer?.price?.total === "number" ? hotel.bestOffer.price.total : undefined) ??
+    (typeof hotel?.raw?.price?.total === "number" ? hotel.raw.price.total : undefined) ??
+    // fall back to parsing strings if needed
+    parsePrice(hotel?.price) ??
+    parsePrice(hotel?.est_price) ??
+    parsePrice(hotel?.raw?.est_price) ??
+    parsePrice(hotel?.raw?.est_price_gbp) ??
+    parsePrice(hotel?.bestOffer?.price?.total) ??
+    parsePrice(hotel?.raw?.price?.total) ??
+    null;
+
+  const currency = (
+    hotel?.currency ||
+    hotel?.raw?.currency ||
+    hotel?.bestOffer?.price?.currency ||
+    hotel?.raw?.price?.currency ||
+    "GBP"
+  ).toUpperCase();
+
 
   // Images (fix URLs -> photoreference, strip quotes)
   const images = gatherImages(hotel);
@@ -137,10 +160,14 @@ export default function HotelCard({ hotel = {}, index }) {
   if (import.meta?.env?.MODE === 'development') {
     console.log(`%cHotelCard ${index} DATA:`, 'color: red; font-weight: bold;', {
       name, price, currency, thumbnail: hotel.thumbnail,
+      legacy_raw_est_gbp: hotel.raw?.est_price_gbp,
+      new_est_price: hotel.est_price,
+      raw_est_price: hotel.raw?.est_price,
+      bestOfferTotal: hotel.bestOffer?.price?.total,
+      rawPriceTotal: hotel.raw?.price?.total,
       firstImage: images[0],
       fixedParam: images[0]?.includes('photoreference='),
       startsWithQuote: images[0]?.startsWith('"') || images[0]?.startsWith("'"),
-      rawEstGBP: hotel.raw?.est_price_gbp,
     });
   }
 
