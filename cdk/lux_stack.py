@@ -94,7 +94,10 @@ class LuxStack(Stack):
         amadeus_secret = secrets.Secret.from_secret_name_v2(
             self, "AmadeusSecret", "/lux/amadeus/credentials"
         )
-
+        
+        # ensure env exists and inject the toggle
+        env["HOTELS_CURRENCY"] = "GBP"   # ← force Amadeus to return GBP
+            
         # ---- HotelAgent
         hotel_fn = _lambda.Function(
             self, "HotelAgent",
@@ -126,6 +129,9 @@ class LuxStack(Stack):
         # Precise secret grants (HotelAgent only)
         google_places_secret.grant_read(hotel_fn)
         amadeus_secret.grant_read(hotel_fn)
+        
+        # ← add this exact line:
+        hotel_fn.add_environment("HOTELS_CURRENCY", "GBP")
 
         # ---- BudgetAgent
         budget_fn = _lambda.Function(

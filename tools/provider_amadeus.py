@@ -12,6 +12,9 @@ import boto3
 
 logger = logging.getLogger(__name__)
 
+# ---- Currency mode (force GBP vs local) ----
+REQUEST_CURRENCY = os.getenv("HOTELS_CURRENCY", "GBP")  # "GBP" to force; empty to use local
+
 # ---- Config from environment ----
 REGION = os.getenv("AWS_REGION", "us-east-1")
 SECRET_NAME = os.getenv("AMADEUS_SECRET_NAME", "/lux/amadeus/credentials")
@@ -282,19 +285,33 @@ def _nights(ci: Optional[str], co: Optional[str]) -> int:
     except Exception:
         return 1
 
-def _best_total(offers: List[dict], want: str = "GBP") -> Optional[float]:
-    best = None
+def _pick_best_offer_any_currency(offers: List[dict]) -> Optional[dict]:
+    """Return the lowest-total offer regardless of currency."""
+    best_offer, best_val = None, None
     for off in offers or []:
-        p = off.get("price", {}) or {}
-        if (p.get("currency") or "").upper() == (want or "GBP").upper():
-            amt = p.get("total") or p.get("base")
-            try:
-                v = float(amt)
-                if v > 0 and (best is None or v < best):
-                    best = v
-            except Exception:
-                pass
-    return best
+        p = (off.get("price") or {})
+        amt = p.get("total") or p.get("base")
+        try:
+            v = float(amt)
+            if v > 0 and (best_val is None or v < best_val):
+                best_val = v
+                best_offer = off
+        except Exception:
+            continue
+    return best_offer
+
+def _extract_amount_currency(offer: Optional[dict]) -> tuple[Optional[float], Optional[str]]:
+    if not offer:
+        return None, None
+    p = offer.get("price") or {}
+    amt = p.get("total") or p.get("base")
+    try:
+        val = float(amt) if amt is not None else None
+    except Exception:
+        val = None
+    curr = (p.get("currency") or "").upper() or None
+    return val, curr
+
 
 
 def _norm_amenities(hotel: dict, offers: List[dict]) -> List[str]:
@@ -486,14 +503,20 @@ def _offers_by_hotel_ids_sdk(
             break
         chunk = ",".join(deduped[i : i + OFFERS_CHUNK_SIZE])
         resp = amadeus_client.shopping.hotel_offers_search.get(
+        kwargs = dict(
             hotelIds=chunk,
             adults=params_base["adults"],
             checkInDate=params_base["checkInDate"],
             checkOutDate=params_base["checkOutDate"],
-            currency=params_base["currency"],
             roomQuantity=params_base["roomQuantity"],
             bestRateOnly=params_base["bestRateOnly"],
         )
+        # Only include currency if you set HOTELS_CURRENCY (and it propagated into params_base)
+        if "currency" in params_base and params_base["currency"]:
+            kwargs["currency"] = params_base["currency"]
+
+        resp = amadeus_client.shopping.hotel_offers_search.get(**kwargs)
+
         part = resp.data or []
         logger.info({"stage": "amadeus_offers_chunk_sdk", "chunk_size": len(chunk.split(",")), "returned": len(part)})
         results.extend(part)
@@ -523,7 +546,8 @@ class HotelCard(TypedDict, total=False):
     images: List[str]
     location_note: str
     amenities: List[str]
-    est_price_gbp: Optional[float]
+    est_price: Optional[float]  # per-night numeric
+    currency: Optional[str]      # ISO 4217 e.g., GBP/EUR/JPY
     lat: NotRequired[Optional[float]]
     lon: NotRequired[Optional[float]]
 
@@ -531,6 +555,7 @@ class SearchResult(TypedDict, total=False):
     status: str
     hotels: List[HotelCard]
     error: str
+    meta: NotRequired[Dict[str, Any]]
 
 def search_hotels(params: Dict[str, Any], *, context=None) -> SearchResult:
     logger.info(f"[amadeus] 🔧 hotel search started @ {datetime.now().isoformat()}")
@@ -578,10 +603,13 @@ def search_hotels(params: Dict[str, Any], *, context=None) -> SearchResult:
         "adults": adults,
         "checkInDate": check_in,
         "checkOutDate": check_out,
-        "currency": currency,
         "roomQuantity": rooms,
         "bestRateOnly": True,
     }
+    
+    # NEW: only add currency if REQUEST_CURRENCY is set (GBP by default)
+    if REQUEST_CURRENCY:
+        params_base["currency"] = REQUEST_CURRENCY
 
     hotel_ids: List[str] = []
     try:
@@ -651,8 +679,11 @@ def search_hotels(params: Dict[str, Any], *, context=None) -> SearchResult:
             geo = hotel.get("geoCode") or {}
             hid = hotel.get("hotelId") or hotel.get("id") or ""
 
-            total = _best_total(offer_list, want=currency)
-            per_night = (total / nights) if (total and nights > 0) else None
+            
+            best_offer = _pick_best_offer_any_currency(offer_list)
+            total_amt, total_curr = _extract_amount_currency(best_offer)
+            per_night = (total_amt / nights) if (total_amt and nights > 0) else None
+
 
             lat_val = geo.get("latitude") or (meta_map.get(hid) or {}).get("lat")
             lon_val = geo.get("longitude") or (meta_map.get(hid) or {}).get("lon")
@@ -685,12 +716,13 @@ def search_hotels(params: Dict[str, Any], *, context=None) -> SearchResult:
                     or ""
                 ),
                 "amenities": _norm_amenities(hotel, offer_list),
-                "est_price_gbp": per_night,
+                "est_price": per_night,
+                "currency": total_curr,
                 "lat": lat_val,
                 "lon": lon_val,
             })
 
-        cards.sort(key=lambda x: (float("inf") if x["est_price_gbp"] is None else x["est_price_gbp"]))
+        cards.sort(key=lambda x: (float("inf") if x["est_price"] is None else x["est_price"]))
         debug_meta = {
             "city_code": city_code,
             "city_name": city_name,
