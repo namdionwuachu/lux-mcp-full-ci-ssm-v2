@@ -106,9 +106,6 @@ def lambda_handler(event, context):
             query["location"] = {k: v for k, v in (query["location"] or {}).items() if v is not None} or None
             query = {k: v for k, v in query.items() if v not in (None, {}, [])}
 
-            hotels = amadeus.search_hotels(query)  # already-normalized cards (list)
-            logger.info({"stage": "handler_hotels_count", "count": len(hotels)})
-
             
             # --- Normalize provider output to a list (some adapters return {"status":"ok","hotels":[...]})
             hotel_list = None
@@ -118,6 +115,8 @@ def lambda_handler(event, context):
                 hotel_list = hotels
             else:
                 hotel_list = []
+                
+            logger.info({"stage": "handler_hotels_count", "count": len(hotel_list)})  
 
             # --- Always return the wrapped envelope that the frontend expects
             resp = {
@@ -127,8 +126,18 @@ def lambda_handler(event, context):
             }
 
             # >>> debug preview (log what you're about to return)
+            for h in hotel_list[:3]:
+                if not h.get("est_price") or not h.get("currency"):
+                logger.info({
+                    "stage": "preview_missing_price",
+                    "id": h.get("id"),
+                    "raw_price": h.get("est_price"),
+                    "currency": h.get("currency")
+                })
+                      
+            
             safe_preview = [
-                {k: v for k, v in h.items() if k in ("name", "hotel_id", "id", "currency", "est_price", "est_price_gbp")}
+                {k: v for k, v in h.items() if k in ("name", "hotel_id", "id", "currency", "est_price")}
                 for h in hotel_list[:3]
             ]
             logger.info({"stage": "return_preview", "hotels_count": len(hotel_list), "preview": safe_preview})
@@ -145,7 +154,7 @@ def lambda_handler(event, context):
             use_responder = bool(task.get("use_responder"))
             if use_responder:
                 top = [
-                    {"name": h.get("name"), "id": h.get("id"), "est_price_gbp": h.get("est_price_gbp")}
+                    {"name": h.get("name"), "id": h.get("id"), "est_price": h.get("est_price"), "currency": h.get("currency")}
                     for h in hotel_list[:5]
                 ]
                 narr_env = {
