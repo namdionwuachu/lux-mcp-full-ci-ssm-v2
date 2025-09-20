@@ -130,15 +130,31 @@ async function searchHotels(payload = {}) {
   getCurrencyForCityCode(city_code)
 );
 
-  const currency = String(
-  stay?.currency ||
-  payload?.currency ||
-  getCurrencyForCityCode(city_code) ||
-  import.meta?.env?.VITE_DEFAULT_CURRENCY ||
-  "GBP"
-).trim().toUpperCase();
+  const mapped = getCurrencyForCityCode(city_code);
 
-console.log("[CURRENCY RESOLVED]", currency);
+  const currency = String(
+    stay?.currency ||
+    mapped ||                // ✅ prefer city mapping
+    payload?.currency ||     // then payload fallback
+    import.meta?.env?.VITE_DEFAULT_CURRENCY ||
+    "GBP"
+  ).trim().toUpperCase();
+
+  if (
+    !stay?.currency &&
+    mapped &&
+    payload?.currency &&
+    payload.currency.toUpperCase() !== mapped
+  ) {
+    console.warn(
+      "[CURRENCY MISMATCH] payload=%s mapped=%s city=%s → using mapped",
+      payload.currency,
+      mapped,
+      city_code
+    );
+  }
+
+  console.log("[CURRENCY RESOLVED]", currency);
 
 
   console.log("[BUDGET DEBUG] payload.maxPrice:", payload.maxPrice, "stay.max_price:", stay.max_price, "stay.max_price_gbp:", stay.max_price_gbp);

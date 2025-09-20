@@ -201,12 +201,17 @@
         return;
       }
 
+      // Parse budget (only send if > 0)
+      const maxPrice = Number(maxEl.value);
+      const hasBudget = Number.isFinite(maxPrice) && maxPrice > 0;
+
       const payload = {
         stay: { check_in: inDate, check_out: outDate },
         city_code: getCityCode(city),
         adults,
-        currency: 'GBP',
-        // You can pass wantsPool / max here if your backend supports filters
+        wantsIndoorPool: wantsPool,
+        // ✅ let searchHotels resolve currency itself
+        ...(hasBudget ? { maxPrice } : {}),
       };
 
       console.log("Sending payload:", payload);
