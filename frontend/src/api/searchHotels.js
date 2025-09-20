@@ -1,7 +1,7 @@
 // frontend/src/api/searchHotels.js
 import { callTool } from "./rpc";
 import { normalizeSearchResponse } from "./normalize";
-import { getCurrencyForCityCode } from "../utils/currency"; // ✅ add this import
+
 
 // Helper to normalize city input to 3-letter codes
 const toCityCode = (input = "") => {
@@ -18,6 +18,15 @@ const toCityCode = (input = "") => {
   return map[s] || s.slice(0, 3);
 };
 
+
+// inline function remove: import { getCurrencyForCityCode } from "../utils/currency";
+
+function getCurrencyForCityCode(code) {
+  if (!code) return undefined;
+  const CITY_CURRENCY = { PAR: "EUR", LON: "GBP", NYC: "USD", ROM: "EUR", AMS: "EUR", BCN: "EUR", DXB: "AED", SIN: "SGD" };
+  const key = String(code).trim().toUpperCase();
+  return CITY_CURRENCY[key];
+}
 
 /**
  * Call MCP "hotel_search" and normalize the response for the UI.
