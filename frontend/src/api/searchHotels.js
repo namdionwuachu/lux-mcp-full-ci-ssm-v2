@@ -107,7 +107,9 @@ async function searchHotels(payload = {}) {
       .trim()
       .toUpperCase();
 
-  // 🔧 FIXED: Better budget parsing - only include if it's a real positive number
+  console.log("[BUDGET DEBUG] payload.maxPrice:", payload.maxPrice, "stay.max_price:", stay.max_price, "stay.max_price_gbp:", stay.max_price_gbp);
+  
+  // FIXED: Better budget parsing - only include if it's a real positive number
   const rawBudget = payload.maxPrice ?? stay.max_price ?? stay.max_price_gbp ?? undefined;
   const budgetStr = String(rawBudget || "").trim();
   const budgetNum = Number.parseFloat(budgetStr);
