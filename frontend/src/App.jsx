@@ -56,9 +56,8 @@ export default function App() {
     try {
       setLoading(true);
       setErr("");
-
       if (usePlanner) {
-        // ---- Planner route: send ONLY { query }
+        // ---- Planner route (still sending stay -> structured under the hood) ----
         const parts = [
           `Find a 4-star hotel in ${city}`.trim(),
           `${checkIn} to ${checkOut}`,
@@ -69,18 +68,40 @@ export default function App() {
 
         const query = parts.join(", ").replace(/\s+,/g, ",");
 
+        // Map city name to IATA before currency lookup
+        const CITY_TO_IATA = {
+          LONDON: "LON", PARIS: "PAR", "NEW YORK": "NYC", "LOS ANGELES": "LAX",
+          DUBAI: "DXB", SINGAPORE: "SIN"
+        };
+        const cityUpper = (city || "").trim().toUpperCase();
+        const iata = /^[A-Z]{3}$/.test(cityUpper)
+          ? cityUpper
+          : (CITY_TO_IATA[cityUpper] || cityUpper.slice(0, 3));
+
+        // Budget: parse safely; don’t coerce to null
+        const budgetNum = Number.parseFloat(budget);
+        const hasBudget = Number.isFinite(budgetNum) && String(budget).trim() !== "";
+
         const result = await searchHotels({
           stay: {
             check_in: checkIn,
             check_out: checkOut,
-            city_code: city.toUpperCase(),      // searchHotels.js will normalize with toCityCode()
+            city_code: iata,
             adults: 2,
-            currency: getCurrencyForCityCode(city.toUpperCase()), // ✅ This works
-            max_price_gbp: Number(budget) || null,
+            currency: getCurrencyForCityCode(iata),
+            max_price:     hasBudget ? budgetNum : undefined,   // send both keys
+            max_price_gbp: hasBudget ? budgetNum : undefined,
             wants_indoor_pool: !!indoorPool,
           },
           topN: 5,
         });
+
+        setData({
+          hotels: result.hotels || [],
+          narrative: result.narrative || ""
+        });
+        return;
+      }
 
         // normalizeSearchResponse returns { hotels, narrative }
         setData({
@@ -100,16 +121,22 @@ export default function App() {
         );
       }
 
+      const budgetNum = Number.parseFloat(budget);
+      const hasBudget = Number.isFinite(budgetNum) && String(budget).trim() !== "";
+
       const payload = {
         stay: {
           check_in: checkIn,
           check_out: checkOut,
           city_code,
           adults: 2,
-          currency: getCurrencyForCityCode(city_code), // 🔧 FIXED: Move currency inside stay object
-          max_price_gbp: Number(budget) || undefined,
+          currency: getCurrencyForCityCode(city_code),
+          max_price:     hasBudget ? budgetNum : undefined,
+          max_price_gbp: hasBudget ? budgetNum : undefined,
           wants_indoor_pool: !!indoorPool
         }
+      };
+
         // 🔧 REMOVED: currency: getCurrencyForCityCode(city_code) - was outside stay object
       };
 

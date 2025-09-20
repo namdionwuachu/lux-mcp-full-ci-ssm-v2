@@ -1,8 +1,10 @@
-"""Budget agent: GBP-only, filter under-budget, small pool bonus, rank top N.
+"""Budget agent: currency-agnostic, PER-NIGHT compare (no FX).
+Filters under-budget, small pool bonus, rank top N.
 Returns top + candidates for responder, and ranked (alias) for back-compat.
 """
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime as dt
+import re
 
 def _nights(a: Optional[str], b: Optional[str]) -> int:
     try:
@@ -18,12 +20,105 @@ def _to_float(x) -> Optional[float]:
     except Exception:
         return None
 
-def _price_gbp(h: dict) -> Optional[float]:
-    """Prefer est_price_gbp; accept a couple of legacy fallbacks."""
-    for key in ("est_price_gbp", "est_price", "price_gbp", "price"):
-        p = _to_float(h.get(key))
-        if p is not None:
-            return p
+# ---------- amount extraction + per-night normalization ----------
+_CLEAN_NUM = re.compile(r"[^\d\.\-]")
+
+def _num(x):
+    if x is None:
+        return None
+    if isinstance(x, (int, float)):
+        return float(x)
+    if isinstance(x, str):
+        s = _CLEAN_NUM.sub("", x).strip()
+        try:
+            return float(s)
+        except Exception:
+            return None
+    return None
+
+def _dict_amount(d: dict):
+    """Supports {'amount': 120, 'currency':'EUR'} or {'value':'120.00'}."""
+    if not isinstance(d, dict):
+        return None, None
+    amt = _num(d.get("amount") if "amount" in d else d.get("value"))
+    cur = d.get("currency") or d.get("curr") or d.get("code")
+    return amt, (str(cur).upper() if cur else None)
+
+def _first_amount(obj):
+    """Try common per-night/average/price shapes; return (amount, currency)."""
+    if obj is None:
+        return None, None
+    # Prefer explicit per-night / average nightly if present
+    for k in ("per_night","per_night_amount","price_per_night","nightly","rate_per_night","avg_nightly","average_nightly"):
+        v = obj.get(k)
+        if isinstance(v, dict):
+            a,c = _dict_amount(v)
+            if a is not None:
+                return a,c
+        else:
+            a = _num(v)
+            if a is not None:
+                return a, obj.get("currency")
+    # Average under price/pricing.variations.average
+    for k in ("price","pricing"):
+        pv = obj.get(k)
+        if isinstance(pv, dict):
+            avg = (((pv.get("variations") or {}).get("average") or {}))
+            for kk in ("base","total","amount","value"):
+                if kk in avg:
+                    a = _num(avg.get(kk))
+                    if a is not None:
+                        return a, pv.get("currency")
+    # Generic scalars (may be per-night or total)
+    for k in ("est_price","price","per_night","total"):
+        v = obj.get(k)
+        if isinstance(v, dict):
+            a,c = _dict_amount(v)
+            if a is not None:
+                return a,c
+        else:
+            a = _num(v)
+            if a is not None:
+                return a, obj.get("currency")
+    # Explicit totals (used if nothing else found)
+    for tk in ("total","grand_total","stay_total"):
+        v = obj.get(tk)
+        if isinstance(v, dict):
+            a,c = _dict_amount(v)
+            if a is not None:
+                return a,c
+        else:
+            a = _num(v)
+            if a is not None:
+                return a, obj.get("currency")
+    return None, None
+
+def _per_night_amount(h: dict, nights: int) -> Optional[float]:
+    """
+    Returns a per-night numeric amount:
+      1) Use explicit per-night/average if present.
+      2) Else divide any total by nights.
+    """
+    if nights <= 0:
+        nights = 1
+    amt, _ = _first_amount(h)
+    if amt is not None:
+        return amt
+    # Try nested totals
+    for k in ("price","pricing"):
+        pv = h.get(k)
+        if isinstance(pv, dict):
+            for tk in ("total","grand_total","stay_total"):
+                tv = pv.get(tk)
+                tamt = _num(tv) if not isinstance(tv, dict) else _dict_amount(tv)[0]
+                if tamt is not None:
+                    return tamt / max(nights,1)
+    # Try top-level totals
+    for tk in ("total","grand_total","stay_total"):
+        tv = h.get(tk)
+        tamt = _num(tv) if not isinstance(tv, dict) else _dict_amount(tv)[0]
+        if tamt is not None:
+            return tamt / max(nights,1)
     return None
 
 def _has_indoor_pool(h: dict) -> bool:
@@ -49,36 +144,46 @@ def run(task: Dict[str, Any]) -> Dict[str, Any]:
     """
     Inputs:
       hotels: List[dict]
-      max_price_gbp: float | None
+      max_price or max_price_gbp: float | None  (per-NIGHT budget, in local currency units)
       check_in, check_out: YYYY-MM-DD
       top_n: int
     Output:
       { status, top, candidates, ranked, meta }
     """
     hotels: List[dict] = task.get("hotels", []) or []
-    max_price = _to_float(task.get("max_price_gbp"))
+    # Accept either key; tolerate missing budget (no-cap mode)
+    max_price = task.get("max_price", task.get("max_price_gbp"))
+    max_price = _to_float(max_price)
     n = _nights(task.get("check_in"), task.get("check_out"))
     top_n = int(task.get("top_n", 5) or 5)
 
     enriched: List[dict] = []
     for h in hotels:
         name = h.get("name") or ""
-        price = _price_gbp(h)
+        price = _per_night_amount(h, n)  # per-NIGHT numeric amount (currency-agnostic)
         pool = _has_indoor_pool(h)
 
-        passes = (price is not None and max_price is not None and price <= max_price)
+        # If no budget provided, keep results and sort by price
+        passes = (price is not None and (max_price is None or price <= max_price))
 
         ho = dict(h)
         ho["nights"] = n
         ho["has_indoor_pool"] = pool
-        ho["price_gbp_norm"] = price   # normalized numeric price in GBP
+        ho["price_per_night_norm"] = price
         ho["passes_budget"] = bool(passes)
+        ho["budget_gap"] = (None if (price is None or max_price is None) else round(max_price - price, 2))
+        ho["budget_reason"] = (
+            "no_max_price" if max_price is None
+            else "no_price" if price is None
+            else "under" if price <= max_price
+            else "over"
+        )
         enriched.append(ho)
 
-    # All candidates sorted by GBP price (unpriced last), with small pool tie-breaker
+    # All candidates sorted by per-night price (unpriced last), with small pool tie-breaker
     candidates = sorted(
         enriched,
-        key=lambda x: _sort_key(x.get("price_gbp_norm"), str(x.get("name") or ""), bool(x.get("has_indoor_pool")))
+        key=lambda x: _sort_key(x.get("price_per_night_norm"), str(x.get("name") or ""), bool(x.get("has_indoor_pool")))
     )
 
     # Top = under-budget cheapest first
@@ -90,5 +195,5 @@ def run(task: Dict[str, Any]) -> Dict[str, Any]:
         "top": top,
         "candidates": candidates,
         "ranked": top,  # back-compat alias for any legacy caller
-        "meta": {"total_in": len(hotels), "under_budget": len(under_budget), "nights": n},
+        "meta": {"total_in": len(hotels), "under_budget": len(under_budget), "nights": n, "unit": "per_night"},
     }

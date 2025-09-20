@@ -51,9 +51,38 @@ def lambda_handler(event, context):
         return _response(400, {"status": "error", "message": f"Bad request: {e}"})
 
     try:
-        result = run(task or {})
+        # ---- insert here (replaces: result = run(task or {})) ----
+        task = task or {}
+
+        # Back-compat: prefer max_price; fall back to legacy max_price_gbp
+        if "max_price" not in task and "max_price_gbp" in task:
+            task["max_price"] = task.get("max_price_gbp")
+
+        # Tolerate nested fields under 'stay' (common from FE)
+        stay = task.get("stay") or {}
+        if "max_price" not in task:
+            if "max_price" in stay:
+                task["max_price"] = stay.get("max_price")
+            elif "max_price_gbp" in stay:
+                task["max_price"] = stay.get("max_price_gbp")
+        if "check_in" not in task and "check_in" in stay:
+            task["check_in"] = stay.get("check_in")
+        if "check_out" not in task and "check_out" in stay:
+            task["check_out"] = stay.get("check_out")
+
+        # (optional, helpful) log what we're sending to the agent
+        logger.info(
+            "Budget handler: max_price=%s check_in=%s check_out=%s hotels=%s",
+            task.get("max_price"), task.get("check_in"), task.get("check_out"),
+            len(task.get("hotels") or []),
+        )
+
+        result = run(task)
         return _response(200, result)
     except Exception as e:
         logger.exception("Budget agent error")
         return _response(500, {"status": "error", "message": str(e)})
+
+
+
 

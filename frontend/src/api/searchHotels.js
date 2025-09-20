@@ -107,19 +107,30 @@ async function searchHotels(payload = {}) {
       .trim()
       .toUpperCase();
 
+  // --- budget: parse safely; accept either key from caller ---
+  const rawBudget =
+    payload.maxPrice ?? stay.max_price ?? stay.max_price_gbp ?? undefined;
+  const parsedBudget = Number.parseFloat(rawBudget);
+  const maxPriceVal =
+    Number.isFinite(parsedBudget) && String(rawBudget ?? "").trim() !== ""
+      ? parsedBudget
+      : null;
+
   const toolArgs = {
-  stay: {
-    check_in: checkIn,
-    check_out: checkOut,
-    city_code: toCityCode(city_code || ""),       // ✅ move inside stay
-    adults,
-    currency,
-    wants_indoor_pool: !!(payload.wantsIndoorPool ?? stay.wants_indoor_pool), // ✅ boolean flag
-    max_price_gbp: Number(payload.maxPrice ?? stay.max_price_gbp ?? 0) || null, // ✅ budget key the backend expects
-  },
-  top_n: payload.topN ?? 5,
-  use_responder: true,
-};
+    stay: {
+      check_in: checkIn,
+      check_out: checkOut,
+      city_code: toCityCode(city_code || ""),
+      adults,
+      currency,
+      wants_indoor_pool: !!(payload.wantsIndoorPool ?? stay.wants_indoor_pool),
+      max_price: maxPriceVal,
+      max_price_gbp: maxPriceVal,
+    },
+    top_n: payload.topN ?? 5,
+    use_responder: true,
+  };
+
 
   console.log("[OUT toolArgs.stay]", JSON.stringify(toolArgs.stay, null, 2));
 
