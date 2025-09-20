@@ -107,14 +107,11 @@ async function searchHotels(payload = {}) {
       .trim()
       .toUpperCase();
 
-  // --- budget: parse safely; accept either key from caller ---
-  const rawBudget =
-    payload.maxPrice ?? stay.max_price ?? stay.max_price_gbp ?? undefined;
-  const parsedBudget = Number.parseFloat(rawBudget);
-  const maxPriceVal =
-    Number.isFinite(parsedBudget) && String(rawBudget ?? "").trim() !== ""
-      ? parsedBudget
-      : null;
+  // 🔧 FIXED: Better budget parsing - only include if it's a real positive number
+  const rawBudget = payload.maxPrice ?? stay.max_price ?? stay.max_price_gbp ?? undefined;
+  const budgetStr = String(rawBudget || "").trim();
+  const budgetNum = Number.parseFloat(budgetStr);
+  const hasRealBudget = budgetStr !== "" && budgetStr !== "0" && Number.isFinite(budgetNum) && budgetNum > 0;
 
   const toolArgs = {
     stay: {
@@ -124,16 +121,26 @@ async function searchHotels(payload = {}) {
       adults,
       currency,
       wants_indoor_pool: !!(payload.wantsIndoorPool ?? stay.wants_indoor_pool),
-      max_price: maxPriceVal,
-      max_price_gbp: maxPriceVal,
+      // 🔧 REMOVED: max_price and max_price_gbp - will be added conditionally below
     },
     top_n: payload.topN ?? 5,
     use_responder: true,
   };
 
+  // 🔧 FIXED: Only add budget fields if user provided a real budget
+  if (hasRealBudget) {
+    toolArgs.stay.max_price = budgetNum;
+    toolArgs.stay.max_price_gbp = budgetNum; // For backwards compatibility
+  }
 
-  console.log("[OUT toolArgs.stay]", JSON.stringify(toolArgs.stay, null, 2));
-
+  // Budget guardrail logs — place them right after building toolArgs
+  console.log(
+    "[BUDGET CHECK] hasRealBudget=%s max_price=%s max_price_gbp=%s",
+    hasRealBudget,
+    toolArgs.stay.max_price,
+    toolArgs.stay.max_price_gbp
+  );
+  console.log("[OUT toolArgs.stay]", toolArgs.stay);
   console.log("Structured call args:", toolArgs);
 
   const out = await runHotelSearch(toolArgs, { timeoutMs: 20000 });
