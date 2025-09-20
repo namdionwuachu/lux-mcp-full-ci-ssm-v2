@@ -103,7 +103,7 @@ async function searchHotels(payload = {}) {
   const adults = Number.isFinite(Number(adultsRaw)) ? Math.max(1, Math.trunc(Number(adultsRaw))) : 2;
 
   const currency =
-    String(payload.currency || stay.currency || import.meta?.env?.VITE_DEFAULT_CURRENCY || "GBP")
+    String(stay.currency || payload.currency || import.meta?.env?.VITE_DEFAULT_CURRENCY || "GBP")
       .trim()
       .toUpperCase();
 
