@@ -68,7 +68,7 @@ export default function App() {
 
         const query = parts.join(", ").replace(/\s+,/g, ",");
 
-        // Map city name to IATA before currency lookup
+        // Map city name -> IATA code BEFORE choosing currency
         const CITY_TO_IATA = {
           LONDON: "LON", PARIS: "PAR", "NEW YORK": "NYC", "LOS ANGELES": "LAX",
           DUBAI: "DXB", SINGAPORE: "SIN"
@@ -78,7 +78,7 @@ export default function App() {
           ? cityUpper
           : (CITY_TO_IATA[cityUpper] || cityUpper.slice(0, 3));
 
-        // Budget: parse safely; don’t coerce to null
+        // Budget: safe parse; DO NOT use || null
         const budgetNum = Number.parseFloat(budget);
         const hasBudget = Number.isFinite(budgetNum) && String(budget).trim() !== "";
 
@@ -89,7 +89,8 @@ export default function App() {
             city_code: iata,
             adults: 2,
             currency: getCurrencyForCityCode(iata),
-            max_price:     hasBudget ? budgetNum : undefined,   // send both keys
+            // Send a number only if user actually provided one
+            max_price:     hasBudget ? budgetNum : undefined,
             max_price_gbp: hasBudget ? budgetNum : undefined,
             wants_indoor_pool: !!indoorPool,
           },
