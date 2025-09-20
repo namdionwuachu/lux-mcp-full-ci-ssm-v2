@@ -1,150 +1,265 @@
-// frontend/src/api/searchHotels.js
-import { callTool } from "./rpc";
-import { normalizeSearchResponse } from "./normalize";
+// src/App.jsx
+import "./index.css";
+import { useState } from "react";
+import SearchResults from "./components/SearchResults";
+import { searchHotels } from "./api/searchHotels";
 
-// Helper to normalize city input to 3-letter codes
-const toCityCode = (input = "") => {
+// Map city IATA code -> currency
+const getCurrencyForCityCode = (cityCode) => {
+  const cityToCurrencyMap = {
+    // Europe
+    LON: "GBP", // London
+    PAR: "EUR", // Paris
+    ROM: "EUR", // Rome
+    BCN: "EUR", // Barcelona
+    AMS: "EUR", // Amsterdam
+    BER: "EUR", // Berlin
+    VIE: "EUR", // Vienna
+    ZUR: "CHF", // Zurich
+
+    // Middle East
+    DXB: "AED", // Dubai
+    DOH: "QAR", // Doha
+    RUH: "SAR", // Riyadh
+
+    // North America
+    NYC: "USD", // New York
+    LAX: "USD", // Los Angeles
+    MIA: "USD", // Miami
+    YYZ: "CAD", // Toronto
+
+    // Asia
+    NRT: "JPY", // Tokyo
+    SIN: "SGD", // Singapore
+    HKG: "HKD", // Hong Kong
+    BKK: "THB", // Bangkok
+  };
+
+  return cityToCurrencyMap[cityCode?.toUpperCase()] || "GBP";
+};
+
+// Convert user input (name or code) -> 3-letter IATA code
+const toIata = (input = "") => {
   const s = String(input).trim().toUpperCase();
   const map = {
-    "LONDON": "LON",
-    "PARIS": "PAR",
+    LONDON: "LON",
+    PARIS: "PAR",
     "NEW YORK": "NYC",
     "LOS ANGELES": "LAX",
-    "DUBAI": "DXB",
-    "SINGAPORE": "SIN",
+    DUBAI: "DXB",
+    SINGAPORE: "SIN",
   };
-  if (s.length === 3) return s;
+  if (/^[A-Z]{3}$/.test(s)) return s;
   return map[s] || s.slice(0, 3);
 };
 
-/**
- * Call MCP "hotel_search" and normalize the response for the UI.
- * Returns: { items, hotels, narrative, meta, _raw }
- */
-async function runHotelSearch(toolArgs, { timeoutMs = 20000 } = {}) {
-  const res = await callTool("hotel_search", toolArgs, { timeoutMs });
-  // rpc.js sometimes returns JSON-RPC shape: { content: [{ json: {...} }] }
-  const raw = res?.content?.[0]?.json ?? res ?? {};
-  const normalized = normalizeSearchResponse(raw);
-  // Keep the raw payload for debugging in the UI if needed
-  return { ...normalized, _raw: raw };
-}
+// Symbols for the budget label (fallback to code text for uncommon currencies)
+const SYMBOL = {
+  GBP: "£",
+  EUR: "€",
+  USD: "$",
+  CHF: "CHF ",
+  AED: "AED ",
+  QAR: "QAR ",
+  SAR: "SAR ",
+  CAD: "C$",
+  JPY: "¥",
+  SGD: "S$",
+  HKD: "HK$",
+  THB: "฿",
+};
 
-/**
- * Normalize dates to YYYY-MM-DD (accepts DD/MM/YYYY, YYYY-MM-DD, ISO with time)
- */
-function toYMD(input) {
-  if (!input || typeof input !== "string") return "";
-  const s = input.trim();
-  if (!s) return "";
+export default function App() {
+  const [city, setCity] = useState("London"); // Planner: name OK; Structured: IATA (e.g., LON, PAR)
+  const [checkIn, setCheckIn] = useState("2025-09-01");
+  const [checkOut, setCheckOut] = useState("2025-09-05");
+  const [budget, setBudget] = useState(200);
+  const [indoorPool, setIndoorPool] = useState(true);
 
-  // DD/MM/YYYY or D/M/YYYY
-  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) {
-    const [d, m, y] = s.split("/").map(String);
-    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
-  }
+  // Toggle: true = Planner-style UI hints (we still use structured call underneath)
+  const [usePlanner, setUsePlanner] = useState(true);
 
-  // ISO with time
-  if (/^\d{4}-\d{1,2}-\d{1,2}T/.test(s)) {
-    return s.slice(0, 10);
-  }
+  const [data, setData] = useState({ hotels: [], narrative: "" });
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
 
-  // YYYY-MM-DD or YYYY-M-D
-  if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(s)) {
-    const [y, m, d] = s.split("-");
-    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
-  }
+  // Derive the IATA code & currency for the label (purely visual)
+  const iataForLabel = toIata(city);
+  const currencyForLabel = getCurrencyForCityCode(iataForLabel);
+  const currencySymbol = SYMBOL[currencyForLabel] || `${currencyForLabel} `;
 
-  // Fallback: return as-is (backend is tolerant)
-  return s;
-}
+  const doSearch = async () => {
+    try {
+      setLoading(true);
+      setErr("");
 
-function hasLikeDate(s) {
-  return typeof s === "string" && /\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2}\/\d{4}/.test(s);
-}
+      if (usePlanner) {
+        // Planner-style input, but we call the structured API for reliability
+        const iata = toIata(city);
 
-/**
- * Main entry.
- * If payload has { query } without { stay }, uses QUERY path (LLM/planner style).
- * Otherwise uses STRUCTURED path with explicit params.
- */
-async function searchHotels(payload = {}) {
-  console.log("=== SEARCH HOTELS CALLED ===");
-  const hasQuery = !!payload.query;
-  const hasStay  = !!payload.stay || !!payload.city_code || !!payload.adults || !!payload.currency;
-  console.log("Has query:", hasQuery);
-  console.log("Has stay:", hasStay);
+        // Budget: parse safely; do NOT use `|| null`
+        const budgetNum = Number.parseFloat(budget);
+        const hasBudget =
+          Number.isFinite(budgetNum) && String(budget).trim() !== "";
 
-  // ---- QUERY PATH (freeform) ----
-  if (hasQuery && !payload.stay) {
-    console.log("Taking path: QUERY");
-    const toolArgs = { query: payload.query };
-    const out = await runHotelSearch(toolArgs, { timeoutMs: 30000 });
-    console.log("[searchHotels] normalized (QUERY):", out);
-    return out;
-  }
+        const result = await searchHotels({
+          stay: {
+            check_in: checkIn,
+            check_out: checkOut,
+            city_code: iata,
+            adults: 2,
+            currency: getCurrencyForCityCode(iata), // correct mapping (e.g., "PAR" -> "EUR")
+            // Send both keys for backend compatibility; leave undefined if user didn't enter a number
+            max_price: hasBudget ? budgetNum : undefined,
+            max_price_gbp: hasBudget ? budgetNum : undefined,
+            wants_indoor_pool: !!indoorPool,
+          },
+          topN: 5,
+        });
 
-  // ---- STRUCTURED PATH ----
-  console.log("Taking path: STRUCTURED");
+        setData({
+          hotels: result.hotels || [],
+          narrative: result.narrative || "",
+        });
+        return;
+      }
 
-  // Extract + normalize structured fields
-  const stay = payload.stay ?? {};
-  const checkIn  = toYMD(stay.check_in ?? payload.check_in ?? "");
-  const checkOut = toYMD(stay.check_out ?? payload.check_out ?? "");
+      // Structured route: require a proper IATA city code
+      const city_code = (city || "").trim().toUpperCase();
+      const isIataCityCode = /^[A-Z]{3}$/.test(city_code);
+      if (!isIataCityCode) {
+        throw new Error(
+          "Structured mode requires a 3-letter IATA city code (e.g., LON for London, PAR for Paris). Switch to Planner mode or enter a valid code."
+        );
+      }
 
-  if (!hasLikeDate(checkIn)) throw new Error(`Check-in date is required (got "${stay.check_in ?? payload.check_in ?? ""}"). Use DD/MM/YYYY or YYYY-MM-DD.`);
-  if (!hasLikeDate(checkOut)) throw new Error(`Check-out date is required (got "${stay.check_out ?? payload.check_out ?? ""}"). Use DD/MM/YYYY or YYYY-MM-DD.`);
+      const budgetNum = Number.parseFloat(budget);
+      const hasBudget =
+        Number.isFinite(budgetNum) && String(budget).trim() !== "";
 
-  const city_code = String(payload.city_code ?? stay.city_code ?? "").trim().toUpperCase();
-  if (!city_code) throw new Error("Provide city_code (e.g., PAR or LON).");
+      const payload = {
+        stay: {
+          check_in: checkIn,
+          check_out: checkOut,
+          city_code,
+          adults: 2,
+          currency: getCurrencyForCityCode(city_code),
+          // Send both keys for backend compatibility
+          max_price: hasBudget ? budgetNum : undefined,
+          max_price_gbp: hasBudget ? budgetNum : undefined,
+          wants_indoor_pool: !!indoorPool,
+        },
+      };
 
-  const adultsRaw = payload.adults ?? stay.adults ?? 2;
-  const adults = Number.isFinite(Number(adultsRaw)) ? Math.max(1, Math.trunc(Number(adultsRaw))) : 2;
-
-  // FIX: Give priority to payload.currency over stay.currency
-  const currency = String(
-    payload.currency || 
-    stay.currency || 
-    import.meta?.env?.VITE_DEFAULT_CURRENCY || 
-    "GBP"
-  ).trim().toUpperCase();
-
-  // Better budget parsing - handle both max_price and max_price_gbp from either payload or stay
-  const rawBudget = payload.maxPrice ?? stay.max_price ?? stay.max_price_gbp ?? payload.max_price ?? payload.max_price_gbp ?? undefined;
-  const budgetStr = String(rawBudget || "").trim();
-  const budgetNum = Number.parseFloat(budgetStr);
-  const hasRealBudget = budgetStr !== "" && budgetStr !== "0" && Number.isFinite(budgetNum) && budgetNum > 0;
-
-  const toolArgs = {
-    stay: {
-      check_in: checkIn,
-      check_out: checkOut,
-      city_code: toCityCode(city_code || ""),
-      adults,
-      currency, // This should now use the correct currency from App.jsx
-      wants_indoor_pool: !!(payload.wantsIndoorPool ?? stay.wants_indoor_pool),
-    },
-    top_n: payload.topN ?? 5,
-    use_responder: true,
+      const result = await searchHotels(payload);
+      setData({
+        hotels: result.hotels || [],
+        narrative: result.narrative || "",
+      });
+    } catch (e) {
+      setErr(e?.message || "Search failed");
+    } finally {
+      setLoading(false);
+    }
   };
 
-  // Only add budget fields if user provided a real budget
-  if (hasRealBudget) {
-    toolArgs.stay.max_price = budgetNum;
-    toolArgs.stay.max_price_gbp = budgetNum; // For backwards compatibility
-  }
+  return (
+    <main className="p-6 max-w-7xl mx-auto space-y-6">
+      <h1 className="text-2xl font-bold">Lux Search — Hotels</h1>
 
-  // Debug logs
-  console.log("[CURRENCY DEBUG] payload.currency:", payload.currency, "stay.currency:", stay.currency, "final currency:", currency);
-  console.log("[BUDGET CHECK] hasRealBudget=%s max_price=%s max_price_gbp=%s", hasRealBudget, toolArgs.stay.max_price, toolArgs.stay.max_price_gbp);
-  console.log("[OUT toolArgs.stay]", JSON.stringify(toolArgs.stay, null, 2));
-  console.log("Structured call args:", toolArgs);
+      {/* Controls */}
+      <section className="rounded-xl border bg-white p-4 shadow-sm grid gap-3 sm:grid-cols-3">
+        {/* Mode toggle */}
+        <label className="flex items-center gap-2 sm:col-span-3">
+          <input
+            type="checkbox"
+            checked={usePlanner}
+            onChange={(e) => setUsePlanner(e.target.checked)}
+          />
+          <span>
+            Use <b>AI Planner</b> (agentic hints). Off = <b>Structured</b> (IATA
+            city code).
+          </span>
+        </label>
 
-  const out = await runHotelSearch(toolArgs, { timeoutMs: 20000 });
-  console.log("[searchHotels] normalized (STRUCTURED):", out);
-  return out;
+        <label className="flex flex-col gap-1">
+          <span className="text-sm text-gray-600">
+            {usePlanner ? "City (name)" : "City code (IATA, e.g., LON, PAR)"}
+          </span>
+          <input
+            className="border rounded-lg p-2"
+            value={city}
+            onChange={(e) => setCity(e.target.value)}
+            placeholder={usePlanner ? "Paris" : "PAR"}
+          />
+        </label>
+
+        <label className="flex flex-col gap-1">
+          <span className="text-sm text-gray-600">Check-in</span>
+          <input
+            type="date"
+            className="border rounded-lg p-2"
+            value={checkIn}
+            onChange={(e) => setCheckIn(e.target.value)}
+          />
+        </label>
+
+        <label className="flex flex-col gap-1">
+          <span className="text-sm text-gray-600">Check-out</span>
+          <input
+            type="date"
+            className="border rounded-lg p-2"
+            value={checkOut}
+            onChange={(e) => setCheckOut(e.target.value)}
+          />
+        </label>
+
+        <label className="flex flex-col gap-1">
+          <span className="text-sm text-gray-600">
+            Max nightly budget ({SYMBOL[currencyForLabel] || currencyForLabel})
+          </span>
+          <input
+            type="number"
+            min="0"
+            className="border rounded-lg p-2"
+            value={budget}
+            onChange={(e) => setBudget(e.target.value)}
+          />
+        </label>
+
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={indoorPool}
+            onChange={(e) => setIndoorPool(e.target.checked)}
+          />
+          <span>Prefer indoor pool</span>
+        </label>
+
+        <div className="sm:col-span-3">
+          <button
+            onClick={doSearch}
+            className="mt-1 inline-flex items-center justify-center rounded-lg bg-black px-4 py-2 text-white hover:opacity-90"
+            disabled={loading}
+          >
+            {loading ? "Searching…" : "Search"}
+          </button>
+          {!import.meta.env.VITE_LUX_API && (
+            <span className="ml-3 text-red-600 text-sm">
+              Set VITE_LUX_API in .env.local
+            </span>
+          )}
+        </div>
+      </section>
+
+      {err && (
+        <div className="rounded-md border border-red-300 bg-red-50 px-4 py-2 text-red-800">
+          {err}
+        </div>
+      )}
+
+      <SearchResults data={data} isLoading={loading} />
+    </main>
+  );
 }
-
-export { searchHotels };
-export default searchHotels;
 
