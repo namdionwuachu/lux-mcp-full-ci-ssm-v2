@@ -228,10 +228,28 @@ def _planner_execute_handler(args: Dict[str, Any]) -> Dict[str, Any]:
         "top_n": int(args.get("top_n", 5) or 5),
         "task_id": args.get("request_id"),
     }
+    top_n = int(args.get("top_n", 5) or 5)
+
     bf = _invoke(BUDGET_FN, bf_in) or {}
-    top = bf.get("top") or bf.get("ranked") or []
-    candidates = bf.get("candidates") or top
-    meta = bf.get("meta") or {"total_in": len(hotels)}
+    candidates = bf.get("candidates") or []                # <- never fallback to raw
+    top = (bf.get("top") or bf.get("ranked") or [])[:top_n]
+
+    meta = {
+        **(bf.get("meta") or {}),
+        "total_in": len(hotels),
+        "budget_applied": True,
+        "no_under_budget": len(top) == 0,
+    }
+
+    print(json.dumps({
+       "stage": "mcp.budget_filter.result",
+       "task_id": args.get("request_id"),
+       "top": len(top),
+       "candidates": len(candidates),
+       "no_under_budget": len(top) == 0,
+    }))
+                
+
 
     # responder (optional)
     narrative = None
@@ -286,13 +304,14 @@ def _tools_call(req):
             hotels = (((hs or {}).get("hotels") or {}).get("hotels")) or []
 
             
-            # ---- Step 2: (conditional) budget filter; never drop to empty
+            # ---- Step 2: (conditional) budget filter; never leak raw hotels
             top_n = int(args.get("top_n", 5) or 5)
             max_price = stay.get("max_price_gbp")
 
             if max_price is not None:
                 if not BUDGET_FN:
                     return {"content": [{"type": "text", "text": "BUDGET_FN env not set"}], "isError": True}
+
                 bf_in = {
                     "hotels": hotels,
                     "max_price_gbp": max_price,
@@ -301,18 +320,41 @@ def _tools_call(req):
                     "top_n": top_n,
                     "task_id": rid,
                 }
+
+                print(json.dumps({
+                "stage": "mcp.budget_filter.invoke",
+                "task_id": rid,
+                "max_price_gbp": max_price,
+                "hotels_in": len(hotels),
+                "check_in": stay.get("check_in"),
+                "check_out": stay.get("check_out"),
+                }))
+
                 bf = _invoke(BUDGET_FN, bf_in) or {}
-                # Prefer budget results, but NEVER return empty if we had hotels
-                candidates = bf.get("candidates") or bf.get("top") or hotels
+
+                # ✅ Enforce budget strictly (no fallback to raw hotels)
+                candidates = bf.get("candidates") or []
                 top = (bf.get("top") or candidates)[:top_n]
-                if not top and hotels:
-                    top = hotels[:top_n]
-                meta = {**(bf.get("meta") or {}), "total_in": len(hotels), "budget_applied": True}
+                meta = {
+                    **(bf.get("meta") or {}),
+                    "total_in": len(hotels),
+                    "budget_applied": True,
+                    "no_under_budget": len(top) == 0,
+                }
+
+                print(json.dumps({
+                "stage": "mcp.budget_filter.result",
+                "task_id": rid,
+                "top": len(top),
+                "candidates": len(candidates),
+                "no_under_budget": len(top) == 0,
+                }))
             else:
-                # No budget provided → pass hotels through
+                # No budget provided → pass through unchanged
                 candidates = hotels
                 top = hotels[:top_n]
                 meta = {"total_in": len(hotels), "budget_applied": False}
+
 
             result = {
                 "status": "ok",

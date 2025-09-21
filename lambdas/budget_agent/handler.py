@@ -154,9 +154,11 @@ def lambda_handler(event, context):
 
         # Post-filter (defensive): enforce on common shapes
         try:
+            logger.info("[POST-FILTER] enforcing budget on direct & JSON-RPC shapes")
             def _filter_in_place(lst):
                 return _filter_hotels(lst, max_price, task.get("currency"), nights)
 
+            # Direct shapes
             if isinstance(result, dict) and isinstance(result.get("hotels"), list):
                 result["hotels"] = _filter_in_place(result["hotels"])
             if isinstance(result, dict) and isinstance(result.get("candidates"), list):
@@ -164,23 +166,26 @@ def lambda_handler(event, context):
             if isinstance(result, dict) and isinstance(result.get("top"), list):
                 result["top"] = _filter_in_place(result["top"])
 
+            # JSON-RPC shape
             content = result.get("result", {}).get("content", []) if isinstance(result, dict) else []
             if content and isinstance(content[0], dict):
                 j = content[0].get("json") or {}
+
+                # a) j["hotels"] is a list
                 if isinstance(j.get("hotels"), list):
                     j["hotels"] = _filter_in_place(j["hotels"])
+
+                # b) j["hotels"] is a dict with nested ["hotels"] list
+                elif isinstance(j.get("hotels"), dict) and isinstance(j["hotels"].get("hotels"), list):
+                    j["hotels"]["hotels"] = _filter_in_place(j["hotels"]["hotels"])
+
+                # Also filter optional fields if present
                 if isinstance(j.get("candidates"), list):
                     j["candidates"] = _filter_in_place(j["candidates"])
                 if isinstance(j.get("top"), list):
                     j["top"] = _filter_in_place(j["top"])
+
                 content[0]["json"] = j
                 result["result"]["content"][0] = content[0]
         except Exception:
             logger.exception("Post-filter failed; returning unfiltered result")
-
-        return _response(200, result)
-    except Exception as e:
-        logger.exception("Budget agent error")
-        return _response(500, {"status": "error", "message": str(e)})
-
-

@@ -99,19 +99,30 @@
     };
 
     function extractHotels(resp) {
-      // Prefer normalized items from your searchHotels()
+      // 1) Prefer server-filtered lists (budget-enforced)
+      if (Array.isArray(resp?.top) && resp.top.length) return resp.top;
+      if (Array.isArray(resp?.candidates) && resp.candidates.length) return resp.candidates;
+
+      // 2) If the filtered lists are inside a JSON-RPC envelope
+      const j = resp?.result?.content?.[0]?.json;
+      if (Array.isArray(j?.top) && j.top.length) return j.top;
+      if (Array.isArray(j?.candidates) && j.candidates.length) return j.candidates;
+
+      // 3) Your previous normalized fallbacks
       if (Array.isArray(resp?.items) && resp.items.length) return resp.items;
       if (Array.isArray(resp?.hotels) && resp.hotels.length) return resp.hotels;
 
-      // Raw MCP JSON-RPC fallback (seen in your logs)
-      const j = resp?.result?.content?.[0]?.json;
+      // 4) Provider fallbacks (note: supports {hotels:{hotels:[...]}})
       if (Array.isArray(j?.hotels?.hotels)) return j.hotels.hotels;
       if (Array.isArray(j?.hotels)) return j.hotels;
+      if (Array.isArray(resp?.hotels?.hotels)) return resp.hotels.hotels;
 
       if (Array.isArray(resp?.results)) return resp.results;
       if (Array.isArray(resp?.offers)) return resp.offers;
+
       return [];
     }
+
 
     function pickImage(hotel) {
       const cands = [
