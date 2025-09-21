@@ -130,13 +130,14 @@
       // Prices: normalized first, then raw fallbacks
       const priceNum =
         parsePrice(h.price) ??
+        parsePrice(h.est_price) ??              // ← add this
         parsePrice(h.est_price_gbp) ??
         parsePrice(h.raw && h.raw.est_price_gbp) ??
         null;
 
       const currency =
         (h.currency && String(h.currency).toUpperCase()) ||
-        (h.est_price_gbp != null ? "GBP" : "GBP");
+        (h.est_price_gbp != null ? "GBP" : "GBP"); // kept as a fallback
 
       const priceText = priceNum != null ? money(priceNum, currency) : "Price unavailable";
 

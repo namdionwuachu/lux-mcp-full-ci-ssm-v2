@@ -21,7 +21,8 @@ def _to_float(x) -> Optional[float]:
         return None
 
 # ---------- amount extraction + per-night normalization ----------
-_CLEAN_NUM = re.compile(r"[^\d\.\-]")
+# Allow comma decimals (e.g., "90,80")
+_CLEAN_NUM = re.compile(r"[^\d,\.\-]")
 
 def _num(x):
     if x is None:
@@ -29,7 +30,13 @@ def _num(x):
     if isinstance(x, (int, float)):
         return float(x)
     if isinstance(x, str):
-        s = _CLEAN_NUM.sub("", x).strip()
+        s = _CLEAN_NUM.sub("", x).strip()   # <- Python: .strip(), not .trim()
+        # If it uses comma as decimal and no dot, convert comma to dot
+        if "," in s and "." not in s:
+            s = s.replace(",", ".")         # "90,80" -> "90.80"
+        else:
+            # Drop thousands separators: "1,234.56" -> "1234.56"
+            s = s.replace(",", "")
         try:
             return float(s)
         except Exception:
@@ -48,7 +55,7 @@ def _first_amount(obj):
     """Try common per-night/average/price shapes; return (amount, currency)."""
     if obj is None:
         return None, None
-    # Prefer explicit per-night / average nightly if present
+    # Prefer explicit per-night / average nightly
     for k in ("per_night","per_night_amount","price_per_night","nightly","rate_per_night","avg_nightly","average_nightly"):
         v = obj.get(k)
         if isinstance(v, dict):
@@ -141,29 +148,15 @@ def _sort_key(price: Optional[float], name: str, pool: bool) -> Tuple[int, float
     return (0, adj, name or "")
 
 def run(task: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Inputs:
-      hotels: List[dict]
-      max_price or max_price_gbp: float | None  (per-NIGHT budget, in local currency units)
-      check_in, check_out: YYYY-MM-DD
-      top_n: int
-    Output:
-      { status, top, candidates, ranked, meta }
-    """
     hotels: List[dict] = task.get("hotels", []) or []
-    # Accept either key; tolerate missing budget (no-cap mode)
-    max_price = task.get("max_price", task.get("max_price_gbp"))
-    max_price = _to_float(max_price)
+    max_price = _to_float(task.get("max_price", task.get("max_price_gbp")))
     n = _nights(task.get("check_in"), task.get("check_out"))
     top_n = int(task.get("top_n", 5) or 5)
 
     enriched: List[dict] = []
     for h in hotels:
-        name = h.get("name") or ""
-        price = _per_night_amount(h, n)  # per-NIGHT numeric amount (currency-agnostic)
+        price = _per_night_amount(h, n)
         pool = _has_indoor_pool(h)
-
-        # If no budget provided, keep results and sort by price
         passes = (price is not None and (max_price is None or price <= max_price))
 
         ho = dict(h)
@@ -180,20 +173,26 @@ def run(task: Dict[str, Any]) -> Dict[str, Any]:
         )
         enriched.append(ho)
 
-    # All candidates sorted by per-night price (unpriced last), with small pool tie-breaker
-    candidates = sorted(
+    # Full sorted list (for debugging)
+    candidates_all = sorted(
         enriched,
         key=lambda x: _sort_key(x.get("price_per_night_norm"), str(x.get("name") or ""), bool(x.get("has_indoor_pool")))
     )
 
-    # Top = under-budget cheapest first
-    under_budget = [h for h in candidates if h.get("passes_budget")]
+    # Under-budget only for outward-facing fields
+    under_budget = [h for h in candidates_all if h.get("passes_budget")]
     top = under_budget[: top_n]
 
     return {
         "status": "ok",
-        "top": top,
-        "candidates": candidates,
-        "ranked": top,  # back-compat alias for any legacy caller
-        "meta": {"total_in": len(hotels), "under_budget": len(under_budget), "nights": n, "unit": "per_night"},
+        "top": top,                        # under-budget
+        "candidates": under_budget,        # under-budget ONLY (responder uses this)
+        "ranked": top,                     # back-compat
+        "meta": {
+            "total_in": len(hotels),
+            "under_budget": len(under_budget),
+            "nights": n,
+            "unit": "per_night"
+        },
+        "debug_all_candidates": candidates_all,  # full list for logs/debug
     }
