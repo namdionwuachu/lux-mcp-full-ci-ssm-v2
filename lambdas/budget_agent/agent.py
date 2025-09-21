@@ -30,10 +30,10 @@ def _num(x):
     if isinstance(x, (int, float)):
         return float(x)
     if isinstance(x, str):
-        s = _CLEAN_NUM.sub("", x).strip()   # <- Python: .strip(), not .trim()
+        s = _CLEAN_NUM.sub("", x).strip()  # <- Python: .strip(), not .trim()
         # If it uses comma as decimal and no dot, convert comma to dot
         if "," in s and "." not in s:
-            s = s.replace(",", ".")         # "90,80" -> "90.80"
+            s = s.replace(",", ".")  # "90,80" -> "90.80"
         else:
             # Drop thousands separators: "1,234.56" -> "1234.56"
             s = s.replace(",", "")
@@ -42,8 +42,6 @@ def _num(x):
         except Exception:
             return None
     return None
-
-# keep your existing _CLEAN_NUM / _num helpers
 
 def _dict_amount(d: dict):
     if not isinstance(d, dict):
@@ -99,7 +97,7 @@ def _first_amount(obj):
             a = _num(v)
             if a is not None: return a, obj.get("currency")
 
-    # 5) Explicit totals (if nothing else found — per-night ÷ nights in _per_night_amount)
+    # 5) Explicit totals (if nothing else found — per-night ÷ nights in _per_night)
     for tk in ("total","grand_total","stay_total"):
         v = obj.get(tk)
         if isinstance(v, dict):
@@ -123,8 +121,7 @@ def _first_amount(obj):
 
     return None, None
 
-
-def _per_night_amount(h: dict, nights: int) -> Optional[float]:
+def _per_night(h: dict, nights: int) -> Optional[float]:
     """
     Returns a per-night numeric amount:
       1) Use explicit per-night/average if present.
@@ -175,9 +172,9 @@ def run(task: Dict[str, Any]) -> Dict[str, Any]:
     hotels: List[dict] = task.get("hotels", []) or []
     # budget (accept either key)
     max_price = task.get("max_price", task.get("max_price_gbp"))
-    try:    
+    try:
         max_price = float(max_price) if max_price is not None else None
-    except: 
+    except:
         max_price = None
     
     # Fixed: use _nights and check_in (not check*in)
@@ -186,8 +183,8 @@ def run(task: Dict[str, Any]) -> Dict[str, Any]:
     
     enriched: List[dict] = []
     for h in hotels:
-        # Fixed: use _per_night_amount (not *per*night_amount)
-        nightly = _per_night_amount(h, n)
+        # Fixed: use _per_night (not *per*night_amount)
+        nightly = _per_night(h, n)
         # Fixed: use _has_indoor_pool (not *has*indoor_pool)
         pool = _has_indoor_pool(h)
         passes = (nightly is not None and (max_price is None or nightly <= max_price))
@@ -222,9 +219,9 @@ def run(task: Dict[str, Any]) -> Dict[str, Any]:
         "candidates": under_budget,  # Fixed: only under-budget hotels
         "ranked": top,
         "meta": {
-            "total_in": len(hotels), 
-            "under_budget": len(under_budget), 
-            "nights": n, 
+            "total_in": len(hotels),
+            "under_budget": len(under_budget),
+            "nights": n,
             "unit": "per_night"
         },
         # Optional: include all candidates for debugging

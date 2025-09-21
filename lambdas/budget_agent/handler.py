@@ -10,6 +10,16 @@ import re
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+
+def _nights(check_in: Optional[str], check_out: Optional[str]) -> int:
+    try:
+        y1, m1, d1 = map(int, str(check_in)[:10].split("-"))
+        y2, m2, d2 = map(int, str(check_out)[:10].split("-"))
+        return max(1, (date(y2, m2, d2) - date(y1, m1, d1)).days)
+    except Exception:
+        return 1
+
+
 def _parse_task(event: Dict[str, Any]) -> Dict[str, Any]:
     # Direct invoke (dict from orchestrator)
     if isinstance(event, dict) and ("hotels" in event or "stay" in event or "check_in" in event or "check_out" in event):
@@ -43,7 +53,6 @@ def _response(status: int, payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 # ---------- helpers for budget enforcement ----------
-_NUM_RE = re.compile(r"-?\d+(?:[.,]\d+)?")
 
 # Add/keep this near the top with your other helpers
 
@@ -157,11 +166,11 @@ def lambda_handler(event, context):
         logger.exception("Failed to parse request")
         return _response(400, {"status": "error", "message": f"Bad request: {e}"})
 
-    # Normalize, pre-filter, call agent, post-filter
+    # Normalize, call agent, post-filter, then RETURN
     try:
         task = task or {}
 
-        # Back-compat: prefer max_price over legacy
+        # Back-compat + normalize
         if "max_price" not in task and "max_price_gbp" in task:
             task["max_price"] = task.get("max_price_gbp")
 
@@ -169,7 +178,6 @@ def lambda_handler(event, context):
         task.setdefault("max_price", stay.get("max_price") or stay.get("max_price_gbp"))
         task.setdefault("check_in",  stay.get("check_in"))
         task.setdefault("check_out", stay.get("check_out"))
-        # ✅ standardize currency to uppercase
         cur = stay.get("currency") or task.get("currency")
         task["currency"] = (str(cur).upper() if cur else None)
 
@@ -185,11 +193,16 @@ def lambda_handler(event, context):
             len(task.get("hotels") or []),
         )
 
-        # Pre-filter inline hotels (if orchestrator attached them)
-        if isinstance(task.get("hotels"), list) and task["hotels"]:
-            task["hotels"] = _filter_hotels(task["hotels"], max_price, task.get("currency"), nights)
+        # (optional) diagnostics
+        sample = []
+        priced = 0
+        for h in (task.get("hotels") or [])[:5]:
+            pn = _per_night(h, nights)
+            if pn is not None: priced += 1
+            sample.append({"name": h.get("name"), "per_night_parsed": pn, "has_price_text": bool(h.get("price_text"))})
+        logger.info("Budget shim DIAG: priced=%s/%s sample=%s", priced, len(task.get("hotels") or []), json.dumps(sample)[:1500])
 
-        # Agent
+        # Call the agent
         result = run(task)
 
         # Post-filter (defensive): enforce on common shapes
@@ -210,22 +223,23 @@ def lambda_handler(event, context):
             content = result.get("result", {}).get("content", []) if isinstance(result, dict) else []
             if content and isinstance(content[0], dict):
                 j = content[0].get("json") or {}
-
-                # a) j["hotels"] is a list
                 if isinstance(j.get("hotels"), list):
                     j["hotels"] = _filter_in_place(j["hotels"])
-
-                # b) j["hotels"] is a dict with nested ["hotels"] list
                 elif isinstance(j.get("hotels"), dict) and isinstance(j["hotels"].get("hotels"), list):
                     j["hotels"]["hotels"] = _filter_in_place(j["hotels"]["hotels"])
-
-                # Also filter optional fields if present
                 if isinstance(j.get("candidates"), list):
                     j["candidates"] = _filter_in_place(j["candidates"])
                 if isinstance(j.get("top"), list):
                     j["top"] = _filter_in_place(j["top"])
-
                 content[0]["json"] = j
                 result["result"]["content"][0] = content[0]
         except Exception:
             logger.exception("Post-filter failed; returning unfiltered result")
+
+        # ✅ Return the (possibly post-filtered) result to API Gateway/Lambda proxy
+        return _response(200, result)
+
+    except Exception as e:
+        logger.exception("Budget agent error")
+        return _response(500, {"status": "error", "message": str(e)})
+
