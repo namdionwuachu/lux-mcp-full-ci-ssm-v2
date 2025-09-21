@@ -43,8 +43,9 @@ def _num(x):
             return None
     return None
 
+# keep your existing _CLEAN_NUM / _num helpers
+
 def _dict_amount(d: dict):
-    """Supports {'amount': 120, 'currency':'EUR'} or {'value':'120.00'}."""
     if not isinstance(d, dict):
         return None, None
     amt = _num(d.get("amount") if "amount" in d else d.get("value"))
@@ -52,25 +53,28 @@ def _dict_amount(d: dict):
     return amt, (str(cur).upper() if cur else None)
 
 def _first_amount(obj):
+    """Try common nightly/average/price shapes; return (amount, currency)."""
     if obj is None:
         return None, None
 
-    # Prefer explicit nightly fields
+    # 1) Explicit nightly or average nightly fields
     for k in ("per_night","per_night_amount","price_per_night","nightly","rate_per_night",
               "avg_nightly","average_nightly"):
         v = obj.get(k)
         if isinstance(v, dict):
-            a,c = _dict_amount(v);  if a is not None: return a,c
+            a,c = _dict_amount(v)
+            if a is not None: return a,c
         else:
-            a = _num(v);            if a is not None: return a, obj.get("currency")
+            a = _num(v)
+            if a is not None: return a, obj.get("currency")
 
-    # Text forms commonly emitted by providers / responders
+    # 2) Text forms (providers often give "€90.80", "$170.00")
     for k in ("price_text","est_price_text"):
         a = _num(obj.get(k))
         if a is not None:
             return a, obj.get("currency")
 
-    # Average under price/pricing.variations.average
+    # 3) price/pricing (including variations.average.*)
     for k in ("price","pricing"):
         pv = obj.get(k)
         if isinstance(pv, dict):
@@ -81,36 +85,41 @@ def _first_amount(obj):
                     if a is not None:
                         return a, pv.get("currency")
         else:
-            # price as scalar text/number
             a = _num(pv)
             if a is not None:
                 return a, obj.get("currency")
 
-    # Generic scalars (may be nightly or total)
+    # 4) Generic scalars (may be nightly or total)
     for k in ("est_price","est_price_gbp","price","per_night","total"):
         v = obj.get(k)
         if isinstance(v, dict):
-            a,c = _dict_amount(v);  if a is not None: return a,c
+            a,c = _dict_amount(v)
+            if a is not None: return a,c
         else:
-            a = _num(v);            if a is not None: return a, obj.get("currency")
+            a = _num(v)
+            if a is not None: return a, obj.get("currency")
 
-    # Explicit totals (use ÷ nights later)
+    # 5) Explicit totals (if nothing else found — per-night ÷ nights in _per_night_amount)
     for tk in ("total","grand_total","stay_total"):
         v = obj.get(tk)
         if isinstance(v, dict):
-            a,c = _dict_amount(v);  if a is not None: return a,c
+            a,c = _dict_amount(v)
+            if a is not None: return a,c
         else:
-            a = _num(v);            if a is not None: return a, obj.get("currency")
+            a = _num(v)
+            if a is not None: return a, obj.get("currency")
 
-    # Look inside a nested 'raw' block if present
+    # 6) Look inside 'raw' if present (a lot of feeds stash values here)
     raw = obj.get("raw")
     if isinstance(raw, dict):
         for k in ("price","price_text","est_price","est_price_gbp","total","grand_total","stay_total"):
             v = raw.get(k)
             if isinstance(v, dict):
-                a,c = _dict_amount(v);  if a is not None: return a,c
+                a,c = _dict_amount(v)
+                if a is not None: return a, raw.get("currency") or obj.get("currency")
             else:
-                a = _num(v);            if a is not None: return a, raw.get("currency") or obj.get("currency")
+                a = _num(v)
+                if a is not None: return a, raw.get("currency") or obj.get("currency")
 
     return None, None
 
