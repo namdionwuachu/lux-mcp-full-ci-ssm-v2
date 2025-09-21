@@ -173,50 +173,60 @@ def _sort_key(price: Optional[float], name: str, pool: bool) -> Tuple[int, float
 
 def run(task: Dict[str, Any]) -> Dict[str, Any]:
     hotels: List[dict] = task.get("hotels", []) or []
-    max_price = _to_float(task.get("max_price", task.get("max_price_gbp")))
+    # budget (accept either key)
+    max_price = task.get("max_price", task.get("max_price_gbp"))
+    try:    
+        max_price = float(max_price) if max_price is not None else None
+    except: 
+        max_price = None
+    
+    # Fixed: use _nights and check_in (not check*in)
     n = _nights(task.get("check_in"), task.get("check_out"))
     top_n = int(task.get("top_n", 5) or 5)
-
+    
     enriched: List[dict] = []
     for h in hotels:
-        price = _per_night_amount(h, n)
+        # Fixed: use _per_night_amount (not *per*night_amount)
+        nightly = _per_night_amount(h, n)
+        # Fixed: use _has_indoor_pool (not *has*indoor_pool)
         pool = _has_indoor_pool(h)
-        passes = (price is not None and (max_price is None or price <= max_price))
-
+        passes = (nightly is not None and (max_price is None or nightly <= max_price))
+        
         ho = dict(h)
         ho["nights"] = n
         ho["has_indoor_pool"] = pool
-        ho["price_per_night_norm"] = price
+        ho["price_per_night_norm"] = nightly
         ho["passes_budget"] = bool(passes)
-        ho["budget_gap"] = (None if (price is None or max_price is None) else round(max_price - price, 2))
+        ho["budget_gap"] = (None if (nightly is None or max_price is None) else round(max_price - nightly, 2))
         ho["budget_reason"] = (
             "no_max_price" if max_price is None
-            else "no_price" if price is None
-            else "under" if price <= max_price
+            else "no_price" if nightly is None
+            else "under" if nightly <= max_price
             else "over"
         )
         enriched.append(ho)
-
-    # Full sorted list (for debugging)
+    
+    # Fixed: use _sort_key (not *sort*key)
     candidates_all = sorted(
         enriched,
         key=lambda x: _sort_key(x.get("price_per_night_norm"), str(x.get("name") or ""), bool(x.get("has_indoor_pool")))
     )
-
-    # Under-budget only for outward-facing fields
+    
+    # Fixed: candidates should only contain under-budget hotels (to match your lambda handler)
     under_budget = [h for h in candidates_all if h.get("passes_budget")]
     top = under_budget[: top_n]
-
+    
     return {
         "status": "ok",
-        "top": top,                        # under-budget
-        "candidates": under_budget,        # under-budget ONLY (responder uses this)
-        "ranked": top,                     # back-compat
+        "top": top,
+        "candidates": under_budget,  # Fixed: only under-budget hotels
+        "ranked": top,
         "meta": {
-            "total_in": len(hotels),
-            "under_budget": len(under_budget),
-            "nights": n,
+            "total_in": len(hotels), 
+            "under_budget": len(under_budget), 
+            "nights": n, 
             "unit": "per_night"
         },
-        "debug_all_candidates": candidates_all,  # full list for logs/debug
+        # Optional: include all candidates for debugging
+        "debug_all_candidates": candidates_all,
     }
