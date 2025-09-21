@@ -45,7 +45,11 @@ def _response(status: int, payload: Dict[str, Any]) -> Dict[str, Any]:
 # ---------- helpers for budget enforcement ----------
 _NUM_RE = re.compile(r"-?\d+(?:[.,]\d+)?")
 
-def _to_float(v: Any) -> Optional[float]:
+# Add/keep this near the top with your other helpers
+
+_NUM_RE = re.compile(r"-?\d+(?:[.,]\d+)?")
+
+def _to_float(v):
     if v is None:
         return None
     if isinstance(v, (int, float)):
@@ -55,58 +59,94 @@ def _to_float(v: Any) -> Optional[float]:
         return None
     s = m.group(0)
     if "," in s and "." not in s:
-        s = s.replace(",", ".")
+        s = s.replace(",", ".")   # 90,80 -> 90.80
     else:
-        s = s.replace(",", "")
+        s = s.replace(",", "")    # 1,234.56 -> 1234.56
     try:
         return float(s)
     except Exception:
         return None
 
-def _nights(check_in: Optional[str], check_out: Optional[str]) -> int:
-    if not check_in or not check_out:
-        return 1
-    y1, m1, d1 = map(int, check_in.split("-"))
-    y2, m2, d2 = map(int, check_out.split("-"))
-    n = (date(y2, m2, d2) - date(y1, m1, d1)).days
-    return max(1, n)
-
 def _per_night(h: Dict[str, Any], nights: int) -> Optional[float]:
-    # Prefer explicit per-night / average nightly fields
-    for k in ("price","est_price","est_price_gbp","per_night","avg_nightly","average_nightly"):
-        f = _to_float(h.get(k))
+    # 1) Explicit per-night/average nightly
+    for k in ("per_night","per_night_amount","price_per_night","nightly","rate_per_night",
+              "avg_nightly","average_nightly","price_text","est_price_text"):
+        v = h.get(k)
+        f = _to_float(v)
         if f is not None:
             return f
-    # Totals nested under price/pricing
+
+    # 2) price/pricing dicts (including variations.average)
     for k in ("price","pricing"):
         pv = h.get(k)
         if isinstance(pv, dict):
-            for tk in ("total","grand_total","stay_total"):
-                t = _to_float(pv.get(tk))
-                if t is not None and nights > 0:
-                    return t / nights
-    # Top-level totals
+            avg = ((pv.get("variations") or {}).get("average") or {})
+            for kk in ("base","total","amount","value"):
+                f = _to_float(avg.get(kk))
+                if f is not None:
+                    return f
+        else:
+            f = _to_float(pv)
+            if f is not None:
+                return f
+
+    # 3) Generic scalars that might already be nightly
+    for k in ("est_price","est_price_gbp","price","per_night","total"):
+        f = _to_float(h.get(k))
+        if f is not None:
+            return f
+
+    # 4) Totals → divide by nights
     for tk in ("total","grand_total","stay_total"):
-        t = _to_float(h.get(tk))
-        if t is not None and nights > 0:
-            return t / nights
+        f = _to_float(h.get(tk))
+        if f is not None and nights > 0:
+            return f / nights
+
+    # 5) Look inside a nested 'raw' block if present
+    raw = h.get("raw")
+    if isinstance(raw, dict):
+        for k in ("price","price_text","est_price","est_price_gbp","total","grand_total","stay_total"):
+            v = raw.get(k)
+            f = _to_float(v)
+            if f is not None:
+                # if it’s a total, normalize by nights
+                if k in ("total","grand_total","stay_total") and nights > 0:
+                    return f / nights
+                return f
+
     return None
 
-def _filter_hotels(hotels: List[Dict[str, Any]], max_price: Optional[float],
-                   currency: Optional[str], nights: int) -> List[Dict[str, Any]]:
-    if not hotels or max_price is None:
+
+def _filter_hotels(hotels: List[Dict[str, Any]],
+                   max_price: Optional[float],
+                   currency: Optional[str],
+                   nights: int) -> List[Dict[str, Any]]:
+    if not hotels:
         return hotels
-    kept = []
+    if max_price is None:
+        # No cap → return as-is
+        return hotels
+
+    kept: List[Dict[str, Any]] = []
+    priced = 0
+
     for h in hotels:
         pn = _per_night(h, nights)
+        if pn is not None:
+            priced += 1
         if pn is not None and pn <= max_price:
             out = dict(h)
             out.setdefault("est_price", pn)
+            out.setdefault("price_per_night_norm", pn)
+            out["passes_budget"] = True
             if currency:
                 out["currency"] = str(currency).upper()
             kept.append(out)
-    logger.info("[FILTER] budget=%s kept=%d/%d", max_price, len(kept), len(hotels))
+
+    logger.info("[FILTER] budget=%s priced=%d/%d kept=%d",
+                max_price, priced, len(hotels), len(kept))
     return kept
+
 # ---------------------------------------------------
 
 def lambda_handler(event, context):
