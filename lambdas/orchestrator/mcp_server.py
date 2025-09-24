@@ -202,6 +202,10 @@ def _planner_execute_handler(args: Dict[str, Any]) -> Dict[str, Any]:
     stay["check_in"] = _normalize_date(stay.get("check_in"))
     stay["check_out"] = _normalize_date(stay.get("check_out"))
 
+    # ➜ run planner and capture planner_meta
+    plan_result = planner.plan(query)
+    planner_meta = plan_result.get("planner_meta", {"used_llm": False})
+
 
     # planner (for notes / agent order)
     try:
@@ -268,6 +272,7 @@ def _planner_execute_handler(args: Dict[str, Any]) -> Dict[str, Any]:
         "candidates": candidates,
         "narrative": narrative,
         "meta": meta,
+        "planner_meta": planner_meta,  # ➜ include it in the response
     }
 
 
