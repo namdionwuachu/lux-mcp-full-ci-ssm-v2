@@ -12,7 +12,6 @@ ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "*")
 INCLUDE_RESPONDER = os.getenv("INCLUDE_RESPONDER", "true").lower() == "true"
 
 
-
 def _resp(code: int, body: Dict[str, Any]):
     return {
         "statusCode": code,
@@ -204,6 +203,8 @@ def _planner_execute_handler(args: Dict[str, Any]) -> Dict[str, Any]:
 
     # ➜ run planner and capture planner_meta
     plan_result = planner.plan(query)
+    agents       = plan_result.get("agents", [])
+    notes        = plan_result.get("notes", "")
     planner_meta = plan_result.get("planner_meta", {"used_llm": False})
 
 
@@ -253,8 +254,6 @@ def _planner_execute_handler(args: Dict[str, Any]) -> Dict[str, Any]:
        "no_under_budget": len(top) == 0,
     }))
                 
-
-
     # responder (optional)
     narrative = None
     try:
@@ -274,7 +273,6 @@ def _planner_execute_handler(args: Dict[str, Any]) -> Dict[str, Any]:
         "meta": meta,
         "planner_meta": planner_meta,  # ➜ include it in the response
     }
-
 
 def _tools_call(req):
     p = req.get("params", {}) or {}
