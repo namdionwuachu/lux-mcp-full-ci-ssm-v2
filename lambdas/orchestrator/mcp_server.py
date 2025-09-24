@@ -202,19 +202,10 @@ def _planner_execute_handler(args: Dict[str, Any]) -> Dict[str, Any]:
     stay["check_out"] = _normalize_date(stay.get("check_out"))
 
     # ➜ run planner and capture planner_meta
-    plan_result = planner.plan(query)
+    plan_result  = planner_agent_plan(query) // Use the properly imported function
+    planner_meta = plan_result.get("planner_meta", {"used_llm": False})
     agents       = plan_result.get("agents", [])
     notes        = plan_result.get("notes", "")
-    planner_meta = plan_result.get("planner_meta", {"used_llm": False})
-
-
-    # planner (for notes / agent order)
-    try:
-        plan_out = _planner_handler({"query": query})
-        notes = plan_out.get("notes") or ""
-        agents = plan_out.get("agents") or ["hotel_search","budget_filter"]
-    except Exception:
-        notes, agents = "", ["hotel_search","budget_filter"]
 
     # hotel search
     if not HOTEL_FN:
