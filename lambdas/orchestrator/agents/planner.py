@@ -137,11 +137,12 @@ def plan(query: str) -> Dict[str, Any]:
     )
     
     used_llm = False
-    raw = ""
     try:
         raw = LLM.generate(prompt, max_tokens=256, temperature=0.0)  # deterministic
         used_llm = True
     except Exception:
+        raw = ""
+        
         # LLM not available / Bedrock error — continue with fallback
         pass
 
