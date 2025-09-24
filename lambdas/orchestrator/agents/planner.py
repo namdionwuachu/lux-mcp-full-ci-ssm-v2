@@ -4,6 +4,7 @@ from typing import Dict, Any, List, Tuple, Optional
 from shared.bedrock_planner import LLMPlanner as LLM
 import json, re, os
 from datetime import datetime
+from shared.bedrock_planner import MODEL_ID
 
 # Allow a 3-step pipeline if desired (via env)
 INCLUDE_RESPONDER = os.getenv("INCLUDE_RESPONDER", "false").lower() in ("1", "true", "yes")
@@ -152,7 +153,7 @@ def plan(query: str) -> Dict[str, Any]:
         return {
             "agents": DEFAULT_AGENTS,
             "notes": notes_from_bits or DEFAULT_PLAN["notes"],
-            "planner_meta": {"used_llm": False}
+            "planner_meta": {"used_llm": False, "model": MODEL_ID,"model_provider": "bedrock"}
         }
 
     try:
@@ -163,14 +164,14 @@ def plan(query: str) -> Dict[str, Any]:
         return {
             "agents": sanitized["agents"],
             "notes": sanitized["notes"],
-            "planner_meta": {"used_llm": used_llm}
+            "planner_meta": {"used_llm": used_llm, "model": MODEL_ID,"model_provider": "bedrock"}
         }
     except Exception:
         # Final safety net
         return {
             "agents": DEFAULT_AGENTS,
             "notes": notes_from_bits or DEFAULT_PLAN["notes"],
-            "planner_meta": {"used_llm": False}
+            "planner_meta": {"used_llm": False, "model": MODEL_ID,"model_provider": "bedrock" }
         }
 
     
