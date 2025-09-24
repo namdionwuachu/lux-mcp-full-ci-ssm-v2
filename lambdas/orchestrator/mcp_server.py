@@ -202,7 +202,7 @@ def _planner_execute_handler(args: Dict[str, Any]) -> Dict[str, Any]:
     stay["check_out"] = _normalize_date(stay.get("check_out"))
 
     # ➜ run planner and capture planner_meta
-    plan_result  = planner_agent_plan(query) // Use the properly imported function
+    plan_result  = planner_agent_plan(query) # Use the properly imported function
     planner_meta = plan_result.get("planner_meta", {"used_llm": False})
     agents       = plan_result.get("agents", [])
     notes        = plan_result.get("notes", "")
