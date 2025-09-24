@@ -135,10 +135,12 @@ def plan(query: str) -> Dict[str, Any]:
         query=q,
         maybe_resp=maybe_resp
     )
-
+    
+    used_llm = False
     raw = ""
     try:
         raw = LLM.generate(prompt, max_tokens=256, temperature=0.0)  # deterministic
+        used_llm = True
     except Exception:
         # LLM not available / Bedrock error — continue with fallback
         pass
@@ -146,16 +148,28 @@ def plan(query: str) -> Dict[str, Any]:
     obj = _extract_first_json(raw) if raw else None
     if obj is None:
         # Fallback: deterministic agents + parsed notes
-        return {"agents": DEFAULT_AGENTS, "notes": notes_from_bits or DEFAULT_PLAN["notes"]}
+        return {
+            "agents": DEFAULT_AGENTS,
+            "notes": notes_from_bits or DEFAULT_PLAN["notes"],
+            "planner_meta": {"used_llm": False}
+        }
 
     try:
         sanitized = _sanitize(obj)
         # Prefer our reliable notes if the model didn't provide one
         if sanitized.get("notes") in (None, "", "auto plan"):
             sanitized["notes"] = notes_from_bits or "auto plan"
-        return sanitized
+        return {
+            "agents": sanitized["agents"],
+            "notes": sanitized["notes"],
+            "planner_meta": {"used_llm": used_llm}
+        }
     except Exception:
         # Final safety net
-        return {"agents": DEFAULT_AGENTS, "notes": notes_from_bits or DEFAULT_PLAN["notes"]}
+        return {
+            "agents": DEFAULT_AGENTS,
+            "notes": notes_from_bits or DEFAULT_PLAN["notes"],
+            "planner_meta": {"used_llm": False}
+        }
 
-
+    
