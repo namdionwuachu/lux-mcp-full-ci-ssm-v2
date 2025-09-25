@@ -20,6 +20,7 @@ class LuxStack(Stack):
             actions=[
                 "bedrock:InvokeModel",
                 "bedrock:InvokeModelWithResponseStream",
+                "bedrock:ApplyGuardrail",   # <<< ADD THIS
                 "ssm:GetParameter",
             ],
             resources=["*"],
@@ -56,6 +57,11 @@ class LuxStack(Stack):
             "LUX_RADIUS_KM_DEFAULT": os.getenv("LUX_RADIUS_KM_DEFAULT", "8"),
         }
 
+
+        # >>> ADD THESE TWO LINES EXACTLY HERE <<<
+        env["GUARDRAIL_ID_PARAM"] = os.getenv("GUARDRAIL_ID_PARAM", "/lux/bedrock/guardrail_id")
+        env["GUARDRAIL_VERSION_PARAM"] = os.getenv("GUARDRAIL_VERSION_PARAM", "/lux/bedrock/guardrail_version")
+        
         repo_root = Path(__file__).resolve().parents[1]  # <repo_root>
 
         # ---- Orchestrator

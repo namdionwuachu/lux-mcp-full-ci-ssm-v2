@@ -3,6 +3,7 @@
 import os
 import json
 import boto3
+from functools import lru_cache
 
 REGION = os.getenv("AWS_REGION", "us-east-1")
 _ssm   = boto3.client("ssm", region_name=REGION)
@@ -15,8 +16,52 @@ def _get(name, default):
         return os.getenv("BEDROCK_MODEL_ID_PLANNER", default)
 
 
-MODEL_ID = _get("/lux/models/planner", "ai21.jamba-instruct-v1:0")
+MODEL_ID = _get("/lux/models/planner", "ai21.jamba-1-5-mini-v1:0")
 client   = boto3.client("bedrock-runtime", region_name=REGION)
+
+# --- Guardrail resolution (env → SSM) -----------------------------------------
+@lru_cache(maxsize=1)
+def _guardrail_ids():
+    """
+    Resolve guardrail ID/version in this precedence:
+      1) Direct env: GUARDRAIL_ID + GUARDRAIL_VERSION
+      2) SSM params named by env: GUARDRAIL_ID_PARAM + GUARDRAIL_VERSION_PARAM
+         (defaults to /lux/bedrock/guardrail_id and /lux/bedrock/guardrail_version)
+    Returns (id, version) or (None, None).
+    """
+    gr_id = os.getenv("GUARDRAIL_ID")
+    gr_ver = os.getenv("GUARDRAIL_VERSION")
+    if gr_id and gr_ver:
+        return gr_id, gr_ver
+
+    id_param = os.getenv("GUARDRAIL_ID_PARAM", "/lux/bedrock/guardrail_id")
+    ver_param = os.getenv("GUARDRAIL_VERSION_PARAM", "/lux/bedrock/guardrail_version")
+    try:
+        gr_id = _ssm.get_parameter(Name=id_param)["Parameter"]["Value"]
+        gr_ver = _ssm.get_parameter(Name=ver_param)["Parameter"]["Value"]
+        if gr_id and gr_ver:
+            return gr_id, gr_ver
+    except Exception as e:
+        print(f"[guardrail] SSM read failed: {e}")
+    return None, None
+
+
+# Consolidated invoke so every call attaches guardrail if configured
+def _invoke_with_guardrail(model_id: str, body: dict,
+                           content_type="application/json",
+                           accept="application/json"):
+    kwargs = {
+        "modelId": model_id,
+        "contentType": content_type,
+        "accept": accept,
+        "body": json.dumps(body),
+    }
+    gr = _guardrail_ids()
+    if gr and all(gr):
+        kwargs["guardrailIdentifier"] = gr[0]   # NEW
+        kwargs["guardrailVersion"] = gr[1]      # NEW
+    return client.invoke_model(**kwargs)
+
 
 
 class LLMPlanner:
@@ -32,11 +77,12 @@ class LLMPlanner:
                 "max_tokens": max_tokens,
                 "temperature": temperature,
             }
-            resp = client.invoke_model(
-                modelId=MODEL_ID,
-                contentType="application/json",
+            resp = _invoke_with_guardrail(
+                model_id=MODEL_ID,
+                body=body,
+                content_type="application/json",
                 accept="application/json",
-                body=json.dumps(body),
+            
             )
             data = json.loads(resp["body"].read())
             content = data.get("content") or []
@@ -51,11 +97,12 @@ class LLMPlanner:
                 "max_tokens": max_tokens,
                 "temperature": temperature,
             }
-            resp = client.invoke_model(
-                modelId=MODEL_ID,
-                contentType="application/json",
+            resp = _invoke_with_guardrail(
+                model_id=MODEL_ID,
+                body=body,
+                content_type="application/json",
                 accept="application/json",
-                body=json.dumps(body),
+              
             )
             data = json.loads(resp["body"].read())
             content = data.get("content") or []
@@ -63,11 +110,11 @@ class LLMPlanner:
 
         # Fallback for prompt-style models (Llama/Mistral/etc.)
         body = {"prompt": prompt, "max_tokens": max_tokens, "temperature": temperature}
-        resp = client.invoke_model(
-            modelId=MODEL_ID,
-            contentType="application/json",
+        resp = _invoke_with_guardrail(
+            model_id=MODEL_ID,
+            body=body,
+            content_type="application/json",
             accept="application/json",
-            body=json.dumps(body),
         )
         data = json.loads(resp["body"].read())
         # Try common fields used by non-Anthropic providers
