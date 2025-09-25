@@ -3,7 +3,8 @@
 from typing import Dict, Any, List, Tuple, Optional
 from shared.bedrock_planner import LLMPlanner as LLM
 import json, re, os
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from shared.bedrock_planner import MODEL_ID
 
 # Allow a 3-step pipeline if desired (via env)
@@ -92,6 +93,11 @@ def _extract_first_json(text: str) -> Optional[Dict[str, Any]]:
         return json.loads(text[start:end+1])
     except Exception:
         return None
+    
+    
+def _truncate(s: str, n: int = 2000) -> str:
+    return s if len(s) <= n else s[:n] + f"... [truncated {len(s)-n} chars]"
+
 
 def _sanitize(plan: Dict[str, Any]) -> Dict[str, Any]:
     agents = plan.get("agents", [])
@@ -129,49 +135,109 @@ def plan(query: str) -> Dict[str, Any]:
     bits = _parse_query_bits(q)
     notes_from_bits = _build_notes(bits)
 
-    # Build prompt (LLM is optional; we will fallback to DEFAULT_PLAN)
     maybe_resp = ',"responder_narrate"' if INCLUDE_RESPONDER else ""
     prompt = PROMPT_TMPL.format(
         default_json=json.dumps(DEFAULT_PLAN, separators=(",", ":")),
         query=q,
-        maybe_resp=maybe_resp
+        maybe_resp=maybe_resp,
     )
-    
+
+    # Telemetry: request
+    print(json.dumps({
+        "stage": "planner.llm_call",
+        "model": MODEL_ID,
+        "query": q,
+        "prompt": prompt,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }))
+
     used_llm = False
+    raw = ""
+    t0 = time.perf_counter()
     try:
         raw = LLM.generate(prompt, max_tokens=256, temperature=0.0)  # deterministic
         used_llm = True
-    except Exception:
-        raw = ""
-        
-        # LLM not available / Bedrock error — continue with fallback
-        pass
+        # Telemetry: response
+        print(json.dumps({
+            "stage": "planner.llm_response",
+            "model": MODEL_ID,
+            "raw": raw,
+            "response_length": len(raw or ""),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }))
+    except Exception as e:
+        # Telemetry: error
+        print(json.dumps({
+            "stage": "planner.llm_error",
+            "model": MODEL_ID,
+            "error": str(e),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }))
+
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
     obj = _extract_first_json(raw) if raw else None
+
+    # Telemetry: JSON extraction
+    print(json.dumps({
+        "stage": "planner.json_extraction",
+        "extracted_json": obj,
+        "extraction_successful": obj is not None,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }))
+
     if obj is None:
-        # Fallback: deterministic agents + parsed notes
         return {
             "agents": DEFAULT_AGENTS,
             "notes": notes_from_bits or DEFAULT_PLAN["notes"],
-            "planner_meta": {"used_llm": False, "model": MODEL_ID,"model_provider": "bedrock"}
+            "planner_meta": {
+                "used_llm": False,
+                "model": MODEL_ID,
+                "model_provider": "bedrock",
+                "fallback_reason": "no_valid_json",
+                "temperature": 0.0,
+                "max_tokens": 256,
+                "processing_time_ms": elapsed_ms,
+            }
         }
 
     try:
         sanitized = _sanitize(obj)
-        # Prefer our reliable notes if the model didn't provide one
         if sanitized.get("notes") in (None, "", "auto plan"):
             sanitized["notes"] = notes_from_bits or "auto plan"
         return {
             "agents": sanitized["agents"],
             "notes": sanitized["notes"],
-            "planner_meta": {"used_llm": used_llm, "model": MODEL_ID,"model_provider": "bedrock"}
+            "planner_meta": {
+                "used_llm": used_llm,
+                "model": MODEL_ID,
+                "model_provider": "bedrock",
+                "prompt_sent": prompt,
+                "raw_response": raw,
+                "extracted_json": obj,
+                "temperature": 0.0,
+                "max_tokens": 256,
+                "processing_time_ms": elapsed_ms,
+            }
         }
-    except Exception:
-        # Final safety net
+    except Exception as e:
+        print(json.dumps({
+            "stage": "planner.sanitize_error",
+            "error": str(e),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }))
         return {
             "agents": DEFAULT_AGENTS,
             "notes": notes_from_bits or DEFAULT_PLAN["notes"],
-            "planner_meta": {"used_llm": False, "model": MODEL_ID,"model_provider": "bedrock" }
+            "planner_meta": {
+                "used_llm": False,
+                "model": MODEL_ID,
+                "model_provider": "bedrock",
+                "prompt_sent": prompt,
+                "raw_response": raw,
+                "extracted_json": obj,
+                "temperature": 0.0,
+                "max_tokens": 256,
+                "processing_time_ms": elapsed_ms,
+            }
         }
-
-    
