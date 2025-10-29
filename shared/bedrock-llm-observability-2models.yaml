@@ -1,0 +1,475 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Bedrock LLM Observability (Two Models):
+  - Enables Model Invocation Logging to CloudWatch Logs
+  - Creates a CloudWatch dashboard (single-model widgets + multi-model compare)
+  - Creates alarms for each model: p95 latency, error rate, throttles
+  - Optional SNS notifications
+
+Parameters:
+  ModelIdA:
+    Type: String
+    Description: First Bedrock ModelId (e.g., ai21.jamba-1-5-mini-v1:0)
+    AllowedPattern: ".+"
+    ConstraintDescription: ModelIdA cannot be empty
+  ModelIdB:
+    Type: String
+    Description: Second Bedrock ModelId (e.g., anthropic.claude-3-5-sonnet-20240620-v1:0)
+    AllowedPattern: ".+"
+    ConstraintDescription: ModelIdB cannot be empty
+  DashboardName:
+    Type: String
+    Default: bedrock-llm-observability
+    Description: Name for the CloudWatch Dashboard
+  LogGroupName:
+    Type: String
+    Default: /aws/bedrock/model-invocations
+    Description: Log group for Bedrock model invocation logs
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    MaxValue: 3653
+    Description: Retention (days) for invocation logs
+  CreateSNSTopic:
+    Type: String
+    AllowedValues: ["true","false"]
+    Default: "true"
+    Description: Create a new SNS topic for alarms?
+  ExistingSNSTopicArn:
+    Type: String
+    Default: ""
+    Description: If CreateSNSTopic=false, provide an existing SNS topic ARN
+  SNSEmail:
+    Type: String
+    Default: ""
+    Description: Optional email to subscribe to the created SNS topic (you must confirm)
+  AlarmLatencyP95Ms:
+    Type: Number
+    Default: 1500
+    MinValue: 100
+    MaxValue: 60000
+    Description: Threshold (ms) for p95 InvocationLatency alarm
+  AlarmErrorRatePct:
+    Type: Number
+    Default: 2
+    MinValue: 0
+    MaxValue: 100
+    Description: Threshold (%) for Error Rate alarm (client+server errors / invocations)
+
+Conditions:
+  CreateTopic: !Equals [ !Ref CreateSNSTopic, "true" ]
+  HaveSNSEmail: !Not [ !Equals [ !Ref SNSEmail, "" ] ]
+  UseExistingTopic: !And
+    - !Equals [ !Ref CreateSNSTopic, "false" ]
+    - !Not [ !Equals [ !Ref ExistingSNSTopicArn, "" ] ]
+
+Resources:
+  BedrockInvokeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Ref LogGroupName
+      RetentionInDays: !Ref LogRetentionDays
+
+  CWLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: cwlogs-write
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt BedrockInvokeLogGroup.Arn
+
+  # NOTE: AWS::Bedrock::ModelInvocationLoggingConfiguration is not yet supported in CloudFormation
+  # You must configure Bedrock logging manually after stack creation using the AWS CLI
+  # See the PostDeploymentInstructions output for the command
+
+  OnCallTopic:
+    Type: AWS::SNS::Topic
+    Condition: CreateTopic
+    Properties:
+      DisplayName: Bedrock OnCall
+      TopicName: bedrock-llm-oncall
+
+  OnCallSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HaveSNSEmail
+    Properties:
+      Protocol: email
+      Endpoint: !Ref SNSEmail
+      TopicArn: !If [ CreateTopic, !Ref OnCallTopic, !Ref ExistingSNSTopicArn ]
+
+  # ===================== ALARMS =====================
+
+  # Model A Alarms
+  AHighLatencyP95:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "Bedrock-HighLatency-P95-${ModelIdA}"
+      AlarmDescription: !Sub "p95 InvocationLatency > ${AlarmLatencyP95Ms} ms for 5 minutes"
+      Namespace: AWS/Bedrock
+      MetricName: InvocationLatency
+      ExtendedStatistic: p95
+      Period: 60
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 3
+      Threshold: !Ref AlarmLatencyP95Ms
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: ModelId
+          Value: !Ref ModelIdA
+      AlarmActions:
+        - !If [ CreateTopic, !Ref OnCallTopic, !If [ UseExistingTopic, !Ref ExistingSNSTopicArn, !Ref "AWS::NoValue" ] ]
+
+  AThrottlesAny:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "Bedrock-Throttles-${ModelIdA}"
+      AlarmDescription: "Any throttles for 2 minutes (sum > 0)"
+      Namespace: AWS/Bedrock
+      MetricName: InvocationThrottles
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: ModelId
+          Value: !Ref ModelIdA
+      AlarmActions:
+        - !If [ CreateTopic, !Ref OnCallTopic, !If [ UseExistingTopic, !Ref ExistingSNSTopicArn, !Ref "AWS::NoValue" ] ]
+
+  AErrorRateHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "Bedrock-ErrorRate-gt${AlarmErrorRatePct}pct-${ModelIdA}"
+      AlarmDescription: !Sub "Client+Server error rate > ${AlarmErrorRatePct}% for 5 minutes"
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: !Ref AlarmErrorRatePct
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 3
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: m1
+          MetricStat:
+            Metric:
+              Namespace: AWS/Bedrock
+              MetricName: InvocationClientErrors
+              Dimensions:
+                - Name: ModelId
+                  Value: !Ref ModelIdA
+            Period: 60
+            Stat: Sum
+          ReturnData: false
+        - Id: m2
+          MetricStat:
+            Metric:
+              Namespace: AWS/Bedrock
+              MetricName: InvocationServerErrors
+              Dimensions:
+                - Name: ModelId
+                  Value: !Ref ModelIdA
+            Period: 60
+            Stat: Sum
+          ReturnData: false
+        - Id: m3
+          MetricStat:
+            Metric:
+              Namespace: AWS/Bedrock
+              MetricName: Invocations
+              Dimensions:
+                - Name: ModelId
+                  Value: !Ref ModelIdA
+            Period: 60
+            Stat: Sum
+          ReturnData: false
+        - Id: expr1
+          Expression: "100*(m1+m2)/(m3+0.001)"
+          Label: "Error %"
+          ReturnData: true
+      AlarmActions:
+        - !If [ CreateTopic, !Ref OnCallTopic, !If [ UseExistingTopic, !Ref ExistingSNSTopicArn, !Ref "AWS::NoValue" ] ]
+
+  # Model B Alarms
+  BHighLatencyP95:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "Bedrock-HighLatency-P95-${ModelIdB}"
+      AlarmDescription: !Sub "p95 InvocationLatency > ${AlarmLatencyP95Ms} ms for 5 minutes"
+      Namespace: AWS/Bedrock
+      MetricName: InvocationLatency
+      ExtendedStatistic: p95
+      Period: 60
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 3
+      Threshold: !Ref AlarmLatencyP95Ms
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: ModelId
+          Value: !Ref ModelIdB
+      AlarmActions:
+        - !If [ CreateTopic, !Ref OnCallTopic, !If [ UseExistingTopic, !Ref ExistingSNSTopicArn, !Ref "AWS::NoValue" ] ]
+
+  BThrottlesAny:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "Bedrock-Throttles-${ModelIdB}"
+      AlarmDescription: "Any throttles for 2 minutes (sum > 0)"
+      Namespace: AWS/Bedrock
+      MetricName: InvocationThrottles
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: ModelId
+          Value: !Ref ModelIdB
+      AlarmActions:
+        - !If [ CreateTopic, !Ref OnCallTopic, !If [ UseExistingTopic, !Ref ExistingSNSTopicArn, !Ref "AWS::NoValue" ] ]
+
+  BErrorRateHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "Bedrock-ErrorRate-gt${AlarmErrorRatePct}pct-${ModelIdB}"
+      AlarmDescription: !Sub "Client+Server error rate > ${AlarmErrorRatePct}% for 5 minutes"
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: !Ref AlarmErrorRatePct
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 3
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: m1
+          MetricStat:
+            Metric:
+              Namespace: AWS/Bedrock
+              MetricName: InvocationClientErrors
+              Dimensions:
+                - Name: ModelId
+                  Value: !Ref ModelIdB
+            Period: 60
+            Stat: Sum
+          ReturnData: false
+        - Id: m2
+          MetricStat:
+            Metric:
+              Namespace: AWS/Bedrock
+              MetricName: InvocationServerErrors
+              Dimensions:
+                - Name: ModelId
+                  Value: !Ref ModelIdB
+            Period: 60
+            Stat: Sum
+          ReturnData: false
+        - Id: m3
+          MetricStat:
+            Metric:
+              Namespace: AWS/Bedrock
+              MetricName: Invocations
+              Dimensions:
+                - Name: ModelId
+                  Value: !Ref ModelIdB
+            Period: 60
+            Stat: Sum
+          ReturnData: false
+        - Id: expr1
+          Expression: "100*(m1+m2)/(m3+0.001)"
+          Label: "Error %"
+          ReturnData: true
+      AlarmActions:
+        - !If [ CreateTopic, !Ref OnCallTopic, !If [ UseExistingTopic, !Ref ExistingSNSTopicArn, !Ref "AWS::NoValue" ] ]
+
+  # ===================== DASHBOARD =====================
+
+  BedrockDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Ref DashboardName
+      DashboardBody:
+        Fn::Sub: |
+          {
+            "widgets": [
+              {
+                "type":"metric","x":0,"y":0,"width":12,"height":6,
+                "properties":{
+                  "region":"${AWS::Region}",
+                  "title":"Invocations — ${ModelIdA}",
+                  "view":"timeSeries","stacked":false,
+                  "metrics":[
+                    ["AWS/Bedrock","Invocations","ModelId","${ModelIdA}",{"stat":"Sum","label":"Invocations"}]
+                  ],
+                  "yAxis":{"left":{"label":"Count"}},
+                  "period":60
+                }
+              },
+              {
+                "type":"metric","x":12,"y":0,"width":12,"height":6,
+                "properties":{
+                  "region":"${AWS::Region}",
+                  "title":"Invocations — ${ModelIdB}",
+                  "view":"timeSeries","stacked":false,
+                  "metrics":[
+                    ["AWS/Bedrock","Invocations","ModelId","${ModelIdB}",{"stat":"Sum","label":"Invocations"}]
+                  ],
+                  "yAxis":{"left":{"label":"Count"}},
+                  "period":60
+                }
+              },
+              {
+                "type":"metric","x":0,"y":6,"width":12,"height":6,
+                "properties":{
+                  "region":"${AWS::Region}",
+                  "title":"Latency (ms) — ${ModelIdA}",
+                  "view":"timeSeries","stacked":false,
+                  "metrics":[
+                    ["AWS/Bedrock","InvocationLatency","ModelId","${ModelIdA}",{"stat":"p50","label":"p50"}],
+                    [".",".",".",".",{"stat":"p95","label":"p95"}],
+                    [".",".",".",".",{"stat":"p99","label":"p99"}]
+                  ],
+                  "yAxis":{"left":{"label":"ms"}},
+                  "period":60
+                }
+              },
+              {
+                "type":"metric","x":12,"y":6,"width":12,"height":6,
+                "properties":{
+                  "region":"${AWS::Region}",
+                  "title":"Latency (ms) — ${ModelIdB}",
+                  "view":"timeSeries","stacked":false,
+                  "metrics":[
+                    ["AWS/Bedrock","InvocationLatency","ModelId","${ModelIdB}",{"stat":"p50","label":"p50"}],
+                    [".",".",".",".",{"stat":"p95","label":"p95"}],
+                    [".",".",".",".",{"stat":"p99","label":"p99"}]
+                  ],
+                  "yAxis":{"left":{"label":"ms"}},
+                  "period":60
+                }
+              },
+              {
+                "type":"metric","x":0,"y":12,"width":24,"height":6,
+                "properties":{
+                  "region":"${AWS::Region}",
+                  "title":"Latency p95 — Multi-model Compare",
+                  "view":"timeSeries","stacked":false,
+                  "metrics":[
+                    ["AWS/Bedrock","InvocationLatency","ModelId","${ModelIdA}",{"stat":"p95","label":"${ModelIdA} p95"}],
+                    [".",".","ModelId","${ModelIdB}",{"stat":"p95","label":"${ModelIdB} p95"}]
+                  ],
+                  "period":60,
+                  "yAxis":{"left":{"label":"ms"}}
+                }
+              },
+              {
+                "type":"metric","x":0,"y":18,"width":12,"height":6,
+                "properties":{
+                  "region":"${AWS::Region}",
+                  "title":"Errors & Throttles — ${ModelIdA}",
+                  "view":"timeSeries","stacked":false,
+                  "metrics":[
+                    ["AWS/Bedrock","InvocationClientErrors","ModelId","${ModelIdA}",{"stat":"Sum","label":"Client Errors"}],
+                    [".","InvocationServerErrors",".",".",{"stat":"Sum","label":"Server Errors"}],
+                    [".","InvocationThrottles",".",".",{"stat":"Sum","label":"Throttles"}]
+                  ],
+                  "yAxis":{"left":{"label":"Count"}},
+                  "period":60
+                }
+              },
+              {
+                "type":"metric","x":12,"y":18,"width":12,"height":6,
+                "properties":{
+                  "region":"${AWS::Region}",
+                  "title":"Errors & Throttles — ${ModelIdB}",
+                  "view":"timeSeries","stacked":false,
+                  "metrics":[
+                    ["AWS/Bedrock","InvocationClientErrors","ModelId","${ModelIdB}",{"stat":"Sum","label":"Client Errors"}],
+                    [".","InvocationServerErrors",".",".",{"stat":"Sum","label":"Server Errors"}],
+                    [".","InvocationThrottles",".",".",{"stat":"Sum","label":"Throttles"}]
+                  ],
+                  "yAxis":{"left":{"label":"Count"}},
+                  "period":60
+                }
+              },
+              {
+                "type":"metric","x":0,"y":24,"width":24,"height":6,
+                "properties":{
+                  "region":"${AWS::Region}",
+                  "title":"Error Rate (%) — Multi-model Compare",
+                  "view":"timeSeries","stacked":false,
+                  "metrics":[
+                    [{"expression":"100*(m1a+m2a)/MAX([m3a,1])","label":"${ModelIdA} Error %","id":"e1"}],
+                    [{"expression":"100*(m1b+m2b)/MAX([m3b,1])","label":"${ModelIdB} Error %","id":"e2"}],
+                    ["AWS/Bedrock","InvocationClientErrors","ModelId","${ModelIdA}",{"id":"m1a","visible":false}],
+                    [".","InvocationServerErrors",".",".",{"id":"m2a","visible":false}],
+                    [".","Invocations",".",".",{"id":"m3a","visible":false}],
+                    [".","InvocationClientErrors","ModelId","${ModelIdB}",{"id":"m1b","visible":false}],
+                    [".","InvocationServerErrors",".",".",{"id":"m2b","visible":false}],
+                    [".","Invocations",".",".",{"id":"m3b","visible":false}]
+                  ],
+                  "yAxis":{"left":{"label":"%"}},
+                  "period":60
+                }
+              }
+            ]
+          }
+
+Outputs:
+  DashboardNameOut:
+    Description: CloudWatch dashboard name
+    Value: !Ref DashboardName
+  DashboardURL:
+    Description: Direct link to CloudWatch dashboard
+    Value: !Sub "https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${DashboardName}"
+  LogGroupNameOut:
+    Description: CloudWatch Log Group receiving Bedrock invocation logs
+    Value: !Ref LogGroupName
+  CWLogsRoleArn:
+    Description: IAM Role ARN used by Bedrock for logging
+    Value: !GetAtt CWLogsRole.Arn
+  AlarmTopicArn:
+    Description: SNS topic ARN used by alarms
+    Value: !If [ CreateTopic, !Ref OnCallTopic, !If [ UseExistingTopic, !Ref ExistingSNSTopicArn, "No topic configured" ] ]
+  ModelALatencyAlarm:
+    Description: Model A High Latency Alarm Name
+    Value: !Ref AHighLatencyP95
+  ModelAThrottleAlarm:
+    Description: Model A Throttle Alarm Name
+    Value: !Ref AThrottlesAny
+  ModelAErrorRateAlarm:
+    Description: Model A Error Rate Alarm Name
+    Value: !Ref AErrorRateHigh
+  ModelBLatencyAlarm:
+    Description: Model B High Latency Alarm Name
+    Value: !Ref BHighLatencyP95
+  ModelBThrottleAlarm:
+    Description: Model B Throttle Alarm Name
+    Value: !Ref BThrottlesAny
+  PostDeploymentInstructions:
+    Description: Run this command to enable Bedrock logging (replace with actual values from outputs)
+    Value: !Sub |
+      aws bedrock put-model-invocation-logging-configuration --region ${AWS::Region} --logging-config '{
+        "cloudWatchConfig": {
+          "logGroupName": "${LogGroupName}",
+          "roleArn": "${CWLogsRole.Arn}"
+        },
+        "textDataDeliveryEnabled": true,
+        "imageDataDeliveryEnabled": false,
+        "embeddingDataDeliveryEnabled": false
+      }'
