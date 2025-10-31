@@ -31,7 +31,7 @@ def narrate(
     top: List[Dict[str, Any]],
     candidates: List[Dict[str, Any]],
     context: Optional[Dict[str, Any]] = None,
-) -> str:
+) -> Any:  # allow returning dict in debug modes
     top = top or []
     candidates = candidates or []
     context = context or {}
@@ -46,12 +46,19 @@ def narrate(
         top=_compact(top, 2500),
         candidates=_compact(candidates, 2500),
     )
+    
+    # --- DEBUG: return prompt without calling the LLM ---
+    if context.get("__debug_build_only") is True:
+        return {"prompt_text": prompt}
 
     try:
         # Lower temperature for consistency; 600 tokens is usually plenty for 4–6 sentences.
-        out = LLM.generate(prompt, max_tokens=600, temperature=0.15)
-        # Optional: trim whitespace / guard against accidental markdown
-        return out.strip()
+        out = LLM.generate(prompt, max_tokens=600, temperature=0.15).strip()
+        # --- DEBUG: include prompt alongside normal narrative ---
+        if context.get("__include_prompt") is True:
+            return {"narrative": out, "prompt_text": prompt}
+        return out
+    
     except Exception:
         # Safe fallback narrative
         if top:

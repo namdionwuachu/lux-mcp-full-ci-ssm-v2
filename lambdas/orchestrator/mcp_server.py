@@ -244,6 +244,27 @@ def _planner_execute_handler(args: Dict[str, Any]) -> Dict[str, Any]:
        "candidates": len(candidates),
        "no_under_budget": len(top) == 0,
     }))
+    
+    # --- DEBUG: peek the narration prompt (LLM input) without calling the LLM ---
+    if (args or {}).get("debug_narration_prompt") is True:
+        from agents.responder import narrate
+        peek = narrate(
+            top=top,
+            candidates=candidates,
+            context={"stay": stay, "notes": notes, "__debug_build_only": True},
+        )
+        return {
+            "status": "ok",
+            "notes": notes,
+            "agents": agents,
+            "stay": stay,
+            "top": top,
+            "candidates": candidates,
+            "narration_prompt": (peek.get("prompt_text") if isinstance(peek, dict) else None),
+            "meta": meta,
+            "planner_meta": planner_meta,
+        }
+    
                 
     # responder (optional)
     narrative = None
@@ -387,16 +408,25 @@ def _tools_call(req):
                     "task_id": rid,
                 },
             )
-
+                
         elif name == "responder_narrate":
             try:
                 from agents.responder import narrate
-                text = narrate(args.get("top", []), args.get("candidates", []), args.get("context", {}))
-                # normalize to 'narrative' for GUI
-                out = {"status": "ok", "narrative": (text.get("narrative") if isinstance(text, dict) else text)}
-             
+                text = narrate(args.get("top", []),
+                               args.get("candidates", []),
+                               args.get("context", {}))
+                if isinstance(text, dict):
+                    out = {
+                        "status": "ok",
+                        "narrative": text.get("narrative") or "",
+                        "prompt_text": text.get("prompt_text"),  # <-- pass through for debugging
+                    }
+                else:
+                    out = {"status": "ok", "narrative": text}
             except Exception:
-                out = {"status": "ok", "narrative": "Responder not available in this build."}
+                out = {"status": "ok", "narrative": "Responder not available in this build."}        
+        
+        
         elif name in ("planner_plan", "plan"):
             out = _planner_handler(args)
 

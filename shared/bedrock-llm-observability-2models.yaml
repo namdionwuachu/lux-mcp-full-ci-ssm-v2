@@ -114,6 +114,41 @@ Resources:
   # ===================== ALARMS =====================
 
   # Model A Alarms
+  TokenPerInvokeHighA:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "Bedrock-TokensPerInvoke-High-${ModelIdA}"
+      AlarmDescription: "Average (Input+Output tokens)/Invocations > threshold"
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: 1500
+      EvaluationPeriods: 5
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: inTok
+          MetricStat:
+            Metric: { Namespace: AWS/Bedrock, MetricName: InputTokenCount, Dimensions: [{Name: ModelId, Value: !Ref ModelIdA}] }
+            Period: 60
+            Stat: Sum
+          ReturnData: false
+        - Id: outTok
+          MetricStat:
+            Metric: { Namespace: AWS/Bedrock, MetricName: OutputTokenCount, Dimensions: [{Name: ModelId, Value: !Ref ModelIdA}] }
+            Period: 60
+            Stat: Sum
+          ReturnData: false
+        - Id: inv
+          MetricStat:
+            Metric: { Namespace: AWS/Bedrock, MetricName: Invocations, Dimensions: [{Name: ModelId, Value: !Ref ModelIdA}] }
+            Period: 60
+            Stat: Sum
+          ReturnData: false
+        - Id: tpi
+          Expression: "IF(inv>0,(inTok+outTok)/inv,0)"
+          Label: "Tokens per invocation"
+          ReturnData: true
+      AlarmActions:
+        - !If [ CreateTopic, !Ref OnCallTopic, !If [ UseExistingTopic, !Ref ExistingSNSTopicArn, !Ref "AWS::NoValue" ] ]
+
   AHighLatencyP95:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -199,13 +234,48 @@ Resources:
             Stat: Sum
           ReturnData: false
         - Id: expr1
-          Expression: "100*(m1+m2)/(m3+0.001)"
+          Expression: "IF(m3>0, 100*(m1+m2)/m3, 0)"
           Label: "Error %"
           ReturnData: true
       AlarmActions:
         - !If [ CreateTopic, !Ref OnCallTopic, !If [ UseExistingTopic, !Ref ExistingSNSTopicArn, !Ref "AWS::NoValue" ] ]
 
   # Model B Alarms
+  TokenPerInvokeHighB:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "Bedrock-TokensPerInvoke-High-${ModelIdB}"
+      AlarmDescription: "Average (Input+Output tokens)/Invocations > threshold"
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: 1500
+      EvaluationPeriods: 5
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: inTok
+          MetricStat:
+            Metric: { Namespace: AWS/Bedrock, MetricName: InputTokenCount, Dimensions: [{Name: ModelId, Value: !Ref ModelIdB}] }
+            Period: 60
+            Stat: Sum
+          ReturnData: false
+        - Id: outTok
+          MetricStat:
+            Metric: { Namespace: AWS/Bedrock, MetricName: OutputTokenCount, Dimensions: [{Name: ModelId, Value: !Ref ModelIdB}] }
+            Period: 60
+            Stat: Sum
+          ReturnData: false
+        - Id: inv
+          MetricStat:
+            Metric: { Namespace: AWS/Bedrock, MetricName: Invocations, Dimensions: [{Name: ModelId, Value: !Ref ModelIdB}] }
+            Period: 60
+            Stat: Sum
+          ReturnData: false
+        - Id: tpi
+          Expression: "IF(inv>0,(inTok+outTok)/inv,0)"
+          Label: "Tokens per invocation"
+          ReturnData: true
+      AlarmActions:
+        - !If [ CreateTopic, !Ref OnCallTopic, !If [ UseExistingTopic, !Ref ExistingSNSTopicArn, !Ref "AWS::NoValue" ] ]
+
   BHighLatencyP95:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -291,7 +361,7 @@ Resources:
             Stat: Sum
           ReturnData: false
         - Id: expr1
-          Expression: "100*(m1+m2)/(m3+0.001)"
+          Expression: "IF(m3>0, 100*(m1+m2)/m3, 0)"
           Label: "Error %"
           ReturnData: true
       AlarmActions:
@@ -408,14 +478,54 @@ Resources:
                 }
               },
               {
-                "type":"metric","x":0,"y":24,"width":24,"height":6,
+                "type": "metric",
+                "x": 0,
+                "y": 24,
+                "width": 24,
+                "height": 6,
+                "properties": {
+                  "title": "Tokens per Invocation — Input vs Output",
+                  "region": "${AWS::Region}",
+                  "view": "timeSeries",
+                  "stacked": false,
+                  "yAxis": { "left": { "label": "Tokens" } },
+                  "metrics": [
+                    ["AWS/Bedrock","InputTokenCount","ModelId","${ModelIdA}",{"label":"${ModelIdA} Input"}],
+                    ["AWS/Bedrock","OutputTokenCount","ModelId","${ModelIdA}",{"label":"${ModelIdA} Output"}],
+                    ["AWS/Bedrock","InputTokenCount","ModelId","${ModelIdB}",{"label":"${ModelIdB} Input"}],
+                    ["AWS/Bedrock","OutputTokenCount","ModelId","${ModelIdB}",{"label":"${ModelIdB} Output"}]
+                  ],
+                  "period": 60
+                }
+              },
+              {
+                "type": "metric",
+                "x": 0,
+                "y": 30,
+                "width": 24,
+                "height": 6,
+                "properties": {
+                  "title": "Invocations per Minute — Multi-model Trend",
+                  "region": "${AWS::Region}",
+                  "view": "timeSeries",
+                  "stacked": false,
+                  "yAxis": { "left": { "label": "Invocations/min" } },
+                  "metrics": [
+                    ["AWS/Bedrock","Invocations","ModelId","${ModelIdA}",{"stat":"Sum","period":60,"label":"${ModelIdA}"}],
+                    ["AWS/Bedrock","Invocations","ModelId","${ModelIdB}",{"stat":"Sum","period":60,"label":"${ModelIdB}"}]
+                  ],
+                  "period": 60
+                }
+              },
+              {
+                "type":"metric","x":0,"y":36,"width":24,"height":6,
                 "properties":{
                   "region":"${AWS::Region}",
                   "title":"Error Rate (%) — Multi-model Compare",
                   "view":"timeSeries","stacked":false,
                   "metrics":[
-                    [{"expression":"100*(m1a+m2a)/MAX([m3a,1])","label":"${ModelIdA} Error %","id":"e1"}],
-                    [{"expression":"100*(m1b+m2b)/MAX([m3b,1])","label":"${ModelIdB} Error %","id":"e2"}],
+                    [{"expression":"IF(m3a>0,100*(m1a+m2a)/m3a,0)","label":"${ModelIdA} Error %","id":"e1"}],
+                    [{"expression":"IF(m3b>0,100*(m1b+m2b)/m3b,0)","label":"${ModelIdB} Error %","id":"e2"}],
                     ["AWS/Bedrock","InvocationClientErrors","ModelId","${ModelIdA}",{"id":"m1a","visible":false}],
                     [".","InvocationServerErrors",".",".",{"id":"m2a","visible":false}],
                     [".","Invocations",".",".",{"id":"m3a","visible":false}],
@@ -461,6 +571,9 @@ Outputs:
   ModelBThrottleAlarm:
     Description: Model B Throttle Alarm Name
     Value: !Ref BThrottlesAny
+  ModelBErrorRateAlarm:
+    Description: Model B Error Rate Alarm Name
+    Value: !Ref BErrorRateHigh
   PostDeploymentInstructions:
     Description: Run this command to enable Bedrock logging (replace with actual values from outputs)
     Value: !Sub |

@@ -132,14 +132,17 @@ threads = [threading.Thread(target=worker, args=(q,)) for _ in range(3)]
 q.join()
 
 🕵️ 5. Inspect Logs (CloudWatch Logs Insights)
+
 📈 Model usage summary
 fields @timestamp, modelId
 | stats count() as invocations, max(@timestamp) as last_invoked_at by modelId
 | sort last_invoked_at desc
+
 📋 Detailed invocations
 fields @timestamp, modelId, latencyMs, inputTokenCount, outputTokenCount, requestId
 | sort @timestamp desc
 | limit 50
+
 ⏱ Trend over time
 fields @timestamp, modelId
 | stats count() as invokes by bin(1m), modelId
