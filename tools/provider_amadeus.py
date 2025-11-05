@@ -48,9 +48,6 @@ GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
 ENABLE_PLACES_PHOTOS = os.getenv("ENABLE_PLACES_PHOTOS", "1").lower() in {"1", "true", "yes"}
 MAX_PHOTOS_PER_HOTEL = int(os.getenv("MAX_PHOTOS_PER_HOTEL", "4"))
 
-# --- NEW (safe defaults) ---
-PHOTO_PROXY_BASE = os.getenv("PHOTO_PROXY_BASE")  # leave unset
-PHOTO_PROXY_ENABLE_DIRECT_FALLBACK = os.getenv("PHOTO_PROXY_ENABLE_DIRECT_FALLBACK", "0").lower() in {"1","true","yes"}
 
 def _hostname_from_base_url(url: str) -> str:
     return "test" if "test.api.amadeus.com" in url else "production"
@@ -483,7 +480,10 @@ def _places_photos(name: Optional[str], city_for_url: str, lat: Optional[float],
         for ph in photos[:MAX_PHOTOS_PER_HOTEL]:
             pref = ph.get("photo_reference")
             if not pref: continue
-            out.append(f"photo_ref:{pref}")
+            out.append(
+                "https://maps.googleapis.com/maps/api/place/photo"
+                f"?maxwidth=1600&photo_reference={urllib.parse.quote_plus(pref)}&key={GOOGLE_PLACES_API_KEY}"
+            )
            
         return out
     except Exception as e:
