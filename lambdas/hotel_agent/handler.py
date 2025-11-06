@@ -3,7 +3,8 @@ import os
 import json
 import logging
 import base64
-import urllib.parse, urllib.request  # NEW
+import urllib.parse, urllib.request, urllib.error  # NEW
+import boto3, json
 from typing import Any, Dict
 from agent import run  # keep available as a fallback/flag
 from tools import provider_amadeus as amadeus
@@ -21,6 +22,27 @@ CORS = {
 # Feature flag: default to direct provider (normalized hotel cards)
 USE_DIRECT = os.getenv("HOTEL_AGENT_DIRECT", "true").lower() == "true"
 GOOGLE_PLACES_KEY = os.environ.get("GOOGLE_PLACES_API_KEY")  # NEW (used by proxy)
+
+def _get_google_key():
+    key = os.environ.get("GOOGLE_PLACES_API_KEY")
+    if key:
+        return key.strip()
+
+    # fallback to Secrets Manager (uses your existing GOOGLE_SECRET_NAME)
+    secret_name = os.environ.get("GOOGLE_SECRET_NAME", "/lux/google/places_api_key")
+    region = os.environ.get("AWS_REGION", "us-east-1")
+    try:
+        sm = boto3.client("secretsmanager", region_name=region)
+        s = sm.get_secret_value(SecretId=secret_name).get("SecretString", "")
+        try:
+            j = json.loads(s)
+            return (j.get("api_key") or j.get("maps_api_key") or s).strip()
+        except Exception:
+            return s.strip()
+    except Exception as e:
+        logger.error({"stage":"photo_proxy_secret_error","error":str(e)})
+        return ""
+
 
 def parse_task(event: Dict[str, Any]) -> Dict[str, Any]:
     # Direct Lambda invoke (from CLI or another lambda)
@@ -69,22 +91,39 @@ def _photo_proxy(event):
     maxwidth = (qs.get("maxwidth") or "1600").strip()
     if not ref:
         return {"statusCode": 400, "headers": CORS, "body": "Missing ref"}
+
+    key = _get_google_key()
+    if not key:
+        return {"statusCode": 500, "headers": CORS, "body": "Photo proxy: no Google key configured"}
+
     url = "https://maps.googleapis.com/maps/api/place/photo?" + urllib.parse.urlencode({
         "photo_reference": ref,
         "maxwidth": maxwidth,
-        "key": GOOGLE_PLACES_KEY,
+        "key": key,
     })
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        data = r.read()
-        ct = r.headers.get("Content-Type", "image/jpeg")
-        cache = r.headers.get("Cache-Control", "public, max-age=86400")
-    return {
-        "statusCode": 200,
-        "headers": {"Content-Type": ct, "Cache-Control": cache, "Access-Control-Allow-Origin": "*"},
-        "isBase64Encoded": True,
-        "body": base64.b64encode(data).decode("ascii"),
-    }
+
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = r.read()
+            ct = r.headers.get("Content-Type", "image/jpeg")
+            cache = r.headers.get("Cache-Control", "public, max-age=86400")
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": ct, "Cache-Control": cache, "Access-Control-Allow-Origin": "*"},
+            "isBase64Encoded": True,
+            "body": base64.b64encode(data).decode("ascii"),
+        }
+    except urllib.error.HTTPError as e:
+        # return Google’s status/body instead of crashing
+        try:
+            err_body = e.read().decode("utf-8", "ignore")
+        except Exception:
+            err_body = f"Google photo HTTPError {e.code}"
+        return {"statusCode": e.code, "headers": CORS, "body": err_body[:4096]}
+    except Exception as e:
+        logger.exception("photo_proxy_unhandled")
+        return {"statusCode": 502, "headers": CORS, "body": f"Photo proxy error: {e}"}
 
 
     
