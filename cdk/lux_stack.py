@@ -224,7 +224,24 @@ class LuxStack(Stack):
             methods=[apigw2.HttpMethod.POST, apigw2.HttpMethod.OPTIONS],
             integration=mcp_integration,
         )
+        
+        # NEW: /places/photo -> HotelAgent (photo proxy route)
+        photo_integration = apigw2_integrations.HttpLambdaIntegration("PhotoProxyInt", hotel_fn)
+        http.add_routes(
+            path="/places/photo",
+            methods=[apigw2.HttpMethod.GET],
+            integration=photo_integration,
+        )
+        
+        # NEW: Tell HotelAgent the proxy base URL so it can emit ready-to-use links
+        hotel_fn.add_environment("PHOTO_PROXY_BASE", f"{http.api_endpoint}/places/photo")
+        hotel_fn.add_environment("ENABLE_PLACES_PHOTOS", "1")
+        if os.getenv("GOOGLE_PLACES_API_KEY"):
+            hotel_fn.add_environment("GOOGLE_PLACES_API_KEY", os.getenv("GOOGLE_PLACES_API_KEY")
+        )
 
+        
         # ---- Outputs
         CfnOutput(self, "ApiUrl", value=http.api_endpoint, export_name="LuxApiUrl")
         CfnOutput(self, "McpUrl", value=f"{http.api_endpoint}/mcp", export_name="LuxMcpUrl")
+        CfnOutput(self, "PhotoProxyUrl", value=f"{http.api_endpoint}/places/photo", export_name="LuxPhotoProxyUrl")

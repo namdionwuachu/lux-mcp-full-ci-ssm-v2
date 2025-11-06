@@ -3,6 +3,7 @@ import os
 import json
 import logging
 import base64
+import urllib.parse, urllib.request  # NEW
 from typing import Any, Dict
 from agent import run  # keep available as a fallback/flag
 from tools import provider_amadeus as amadeus
@@ -19,6 +20,7 @@ CORS = {
 
 # Feature flag: default to direct provider (normalized hotel cards)
 USE_DIRECT = os.getenv("HOTEL_AGENT_DIRECT", "true").lower() == "true"
+GOOGLE_PLACES_KEY = os.environ.get("GOOGLE_PLACES_API_KEY")  # NEW (used by proxy)
 
 def parse_task(event: Dict[str, Any]) -> Dict[str, Any]:
     # Direct Lambda invoke (from CLI or another lambda)
@@ -60,12 +62,48 @@ def _extract_narrative(tool_result: Dict[str, Any]) -> str:
 def _response(status: int, payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"statusCode": status, "headers": CORS, "body": json.dumps(payload)}
 
+def _photo_proxy(event):
+    """Streams a Google Places photo using the key server-side."""
+    qs = event.get("queryStringParameters") or {}
+    ref = (qs.get("ref") or "").strip()
+    maxwidth = (qs.get("maxwidth") or "1600").strip()
+    if not ref:
+        return {"statusCode": 400, "headers": CORS, "body": "Missing ref"}
+    url = "https://maps.googleapis.com/maps/api/place/photo?" + urllib.parse.urlencode({
+        "photo_reference": ref,
+        "maxwidth": maxwidth,
+        "key": GOOGLE_PLACES_KEY,
+    })
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        data = r.read()
+        ct = r.headers.get("Content-Type", "image/jpeg")
+        cache = r.headers.get("Cache-Control", "public, max-age=86400")
+    return {
+        "statusCode": 200,
+        "headers": {"Content-Type": ct, "Cache-Control": cache, "Access-Control-Allow-Origin": "*"},
+        "isBase64Encoded": True,
+        "body": base64.b64encode(data).decode("ascii"),
+    }
+
+
+    
 def lambda_handler(event, context):
+    # --- PHOTO PROXY: handle this path early and return image bytes
+    # (For API Gateway HTTP/REST requests, one of rawPath/path will be set; for SQS, these are absent)
+    path = str((event or {}).get("rawPath") or (event or {}).get("path") or "").lower()
+    if path.endswith("/places/photo"):
+        return _photo_proxy(event)
+
+    # --- Normal JSON flow continues
     try:
         task = parse_task(event)
     except Exception as e:
         logger.exception("Failed to parse request")
         return _response(400, {"status": "error", "message": f"Bad request: {e}"})
+
+
+
 
     # >>> added: if the request arrived as JSON‑RPC, unwrap to just the arguments
     # supports: {"jsonrpc":"2.0","method":"tools/call","params":{"name":"hotel_search","arguments":{...}}}

@@ -47,7 +47,7 @@ LUX_RADIUS_KM_DEFAULT = float(os.getenv("LUX_RADIUS_KM_DEFAULT", "8.0"))
 GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
 ENABLE_PLACES_PHOTOS = os.getenv("ENABLE_PLACES_PHOTOS", "1").lower() in {"1", "true", "yes"}
 MAX_PHOTOS_PER_HOTEL = int(os.getenv("MAX_PHOTOS_PER_HOTEL", "4"))
-
+PHOTO_PROXY_BASE = (os.getenv("PHOTO_PROXY_BASE") or "").rstrip("/")
 
 def _hostname_from_base_url(url: str) -> str:
     return "test" if "test.api.amadeus.com" in url else "production"
@@ -455,20 +455,32 @@ def _extract_images_from_offers(offers: List[Dict[str, Any]]) -> List[str]:
 
 
 def _places_photos(name: Optional[str], city_for_url: str, lat: Optional[float], lon: Optional[float]) -> List[str]:
+    """
+    Server-side Places lookup → returns PROXY URLs (or photo_ref tokens).
+    Never returns Google URLs with &key=.
+    """
     if not ENABLE_PLACES_PHOTOS or not GOOGLE_PLACES_API_KEY:
         return []
     try:
         if lat is not None and lon is not None:
             url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
-            params = {"key": GOOGLE_PLACES_API_KEY, "location": f"{lat},{lon}", "radius": "500",
-                      "keyword": f"{name}, {city_for_url}" if name else city_for_url}
+            params = {
+                "key": GOOGLE_PLACES_API_KEY,
+                "location": f"{lat},{lon}",
+                "radius": "500",
+                "keyword": f"{name}, {city_for_url}" if name else city_for_url,
+            }
             r = requests.get(url, params=params, timeout=2.5)
             j = r.json()
             results = j.get("results", [])
         else:
             url = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
-            params = {"key": GOOGLE_PLACES_API_KEY, "input": f"{name}, {city_for_url}" if name else city_for_url,
-                      "inputtype": "textquery", "fields": "photos,place_id"}
+            params = {
+                "key": GOOGLE_PLACES_API_KEY,
+                "input": f"{name}, {city_for_url}" if name else city_for_url,
+                "inputtype": "textquery",
+                "fields": "photos,place_id",
+            }
             r = requests.get(url, params=params, timeout=2.5)
             j = r.json()
             results = j.get("candidates", [])
@@ -479,12 +491,12 @@ def _places_photos(name: Optional[str], city_for_url: str, lat: Optional[float],
         out: List[str] = []
         for ph in photos[:MAX_PHOTOS_PER_HOTEL]:
             pref = ph.get("photo_reference")
-            if not pref: continue
-            out.append(
-                "https://maps.googleapis.com/maps/api/place/photo"
-                f"?maxwidth=1600&photo_reference={urllib.parse.quote_plus(pref)}&key={GOOGLE_PLACES_API_KEY}"
-            )
-           
+            if not pref:
+                continue
+            if PHOTO_PROXY_BASE:
+                out.append(f"{PHOTO_PROXY_BASE}?ref={urllib.parse.quote_plus(pref)}&maxwidth=1600")
+            else:
+                out.append(f"photo_ref:{pref}")
         return out
     except Exception as e:
         logger.warning({"stage": "places_photos_failed", "error": str(e)})
