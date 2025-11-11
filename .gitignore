@@ -16,6 +16,10 @@ live.zip
 # Local env files
 frontend/.env.local
 
+# Ignore local config/output files
+mcp.json
+out.json
+
 # Node deps
 frontend/node_modules/
 

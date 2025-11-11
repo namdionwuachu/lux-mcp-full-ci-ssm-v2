@@ -60,6 +60,7 @@ Add repo **Actions secrets**: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`. Push
 Monitor your Amazon Bedrock Large Language Models (LLMs) in real time with latency, error, and throughput dashboards.
 
 [![Observability Runbook](https://img.shields.io/badge/Runbook-LLM%20Observability-blue?style=flat-square&logo=amazonaws)](docs/runbooks/bedrock-llm-observability.md)
+[![CloudWatch Slack Integration Runbook](https://img.shields.io/badge/Runbook-CloudWatch%SlackIntegration-Green?style=flat-square&logo=amazonaws)](docs/runbooks/CloudWatchSlackIntegration.md)
 [![AWS CloudWatch](https://img.shields.io/badge/Dashboard-CloudWatch-orange?style=flat-square&logo=amazoncloudwatch)]
 (https://console.aws.amazon.com/cloudwatch/home?#dashboards:)
 
@@ -70,4 +71,4 @@ Monitor your Amazon Bedrock Large Language Models (LLMs) in real time with laten
 - Python load & burst scripts for performance testing  
 - Multi-model p95 latency comparison widgets  
 
-> 📘 Run the observability setup in under 10 minutes — fully compatible with Lux Search AI Travel Assistant & Cloud AI Nexus deployments.
+> 📘 Run the observability setup in under 10 minutes — fully compatible with Lux Search AI Travel Assistant & CloudAINexus360 deployments.
