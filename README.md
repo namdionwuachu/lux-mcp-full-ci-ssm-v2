@@ -64,7 +64,8 @@ Monitor your Amazon Bedrock Large Language Models (LLMs) in real time with laten
 
 **Included in this runbook:**
 - CloudFormation template for LLM observability  
-- SNS-based alerting (latency, error, throttles)  
+- SNS-based alerting (latency, error, throttles)
+- CloudWatch Slack Integration  
 - Log Insights queries for runtime tracing  
 - Python load & burst scripts for performance testing  
 - Multi-model p95 latency comparison widgets  
