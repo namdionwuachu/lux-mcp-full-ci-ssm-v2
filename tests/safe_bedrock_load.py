@@ -174,6 +174,7 @@ def phase_throttles(safety: Safety, models: list[str],
             time.sleep(1)
 
 # ---------- CLI ----------
+# ---------- CLI ----------
 def main():
     parser = argparse.ArgumentParser(description="Budget-safe Bedrock load tester")
     parser.add_argument("--max-runtime", type=int, default=120, help="Hard stop in seconds (all phases)")
@@ -184,6 +185,12 @@ def main():
     parser.add_argument("--phases", nargs="*", default=["throttles","client_errors","latency","tokens"],
                         choices=["tokens","latency","client_errors","throttles"],
                         help="Which phases to run (order applied)")
+    # new knobs to align with CloudWatch windows
+    parser.add_argument("--tokens-duration", type=int, default=360, help="seconds to run tokens phase")
+    parser.add_argument("--latency-duration", type=int, default=360, help="seconds to run latency phase")
+    parser.add_argument("--throttles-duration", type=int, default=150, help="seconds to run throttles phase")
+    parser.add_argument("--throttles-rate", type=int, default=12, help="requests/sec in throttles phase")
+    parser.add_argument("--client-errors-burst", type=int, default=10, help="4xx requests to send per minute")
     args = parser.parse_args()
 
     models = [m for m in args.models if m]
@@ -206,20 +213,52 @@ def main():
     for ph in args.phases:
         stop_reason = safety.should_stop()
         if stop_reason:
-            print("Global stop:", stop_reason); break
+            print("Global stop:", stop_reason)
+            break
+
         if ph == "tokens":
-            phase_high_tokens_per_invoke(safety, models, duration_sec=30, workers=2, max_tokens=min(512, args.max_tokens))
+            # needs 5 consecutive minutes > threshold
+            phase_high_tokens_per_invoke(
+                safety, models,
+                duration_sec=args.tokens_duration,
+                workers=2,
+                max_tokens=args.max_tokens
+            )
+
         elif ph == "latency":
-            phase_latency_pressure(safety, models, duration_sec=45, workers=3, batch=6, max_tokens=min(256, args.max_tokens))
+            # needs 3 of last 5 minutes breaching
+            phase_latency_pressure(
+                safety, models,
+                duration_sec=args.latency_duration,
+                workers=3, batch=6,
+                max_tokens=min(256, args.max_tokens)
+            )
+
         elif ph == "client_errors":
-            phase_client_errors(safety, models[0], burst=10)
+            # needs 3 of last 5 minutes with errors; spread bursts
+            end = time.time() + 300  # 5 minutes
+            while time.time() < end:
+                phase_client_errors(safety, models[0], burst=args.client_errors_burst)
+                if (reason := safety.should_stop()):
+                    print("Stopping:", reason); break
+                time.sleep(30)  # spread across periods
+
         elif ph == "throttles":
-            phase_throttles(safety, models, rate_per_sec=8, duration_sec=30, max_tokens=min(20, args.max_tokens))
+            # needs 2 consecutive minutes with throttles > 0
+            phase_throttles(
+                safety, models,
+                rate_per_sec=args.throttles_rate,
+                duration_sec=args.throttles_duration,
+                max_tokens=min(20, args.max_tokens)
+            )
 
     print(f"\n== Run summary ==")
     print(f"Successful calls: {safety.succ_calls}")
     print(f"Estimated cost:  ${safety.est_cost_usd:.4f} (cap ${safety.est_budget_usd:.2f})")
     print("Done.")
 
+
 if __name__ == "__main__":
     main()
+
+

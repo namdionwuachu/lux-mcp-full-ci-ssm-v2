@@ -1,0 +1,19 @@
+## 📘 Section 4 – Enabling Bedrock Logging
+
+By default, Bedrock does not stream invocation data — and that’s where your leadership in system enablement begins.
+
+After your CloudFormation stack deploys, grab the **CWLogsRoleArn** and **LogGroupName** from the stack **Outputs**, then run:
+
+```bash
+aws bedrock put-model-invocation-logging-configuration \
+  --region <your-region> \
+  --logging-config '{
+    "cloudWatchConfig": {
+      "logGroupName": "/aws/bedrock/model-invocations",
+      "roleArn": "<CWLogsRoleArn>"
+    },
+    "textDataDeliveryEnabled": true,
+    "imageDataDeliveryEnabled": false,
+    "embeddingDataDeliveryEnabled": false
+  }'
+

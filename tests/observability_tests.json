@@ -1,0 +1,7 @@
+{
+  "tokens_test": "python safe_bedrock_load.py --models ai21.jamba-1-5-mini-v1:0 anthropic.claude-3-5-sonnet-20240620-v1:0 --phases tokens --tokens-duration 420 --max-tokens 1800 --max-calls 200 --budget 1.50",
+  "latency_test": "python safe_bedrock_load.py --models ai21.jamba-1-5-mini-v1:0 anthropic.claude-3-5-sonnet-20240620-v1:0 --phases latency --latency-duration 420 --max-tokens 256 --max-calls 300 --budget 2.00",
+  "error_rate_test": "python safe_bedrock_load.py --models ai21.jamba-1-5-mini-v1:0 anthropic.claude-3-5-sonnet-20240620-v1:0 --phases client_errors --client-errors-burst 12 --max-runtime 600 --budget 0.10",
+  "throttle_test": "python safe_bedrock_load.py --models ai21.jamba-1-5-mini-v1:0 anthropic.claude-3-5-sonnet-20240620-v1:0 --phases throttles --throttles-rate 16 --throttles-duration 180 --max-tokens 20 --budget 0.50"
+}
+

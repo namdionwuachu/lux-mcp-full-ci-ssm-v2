@@ -56,6 +56,12 @@ Parameters:
     MinValue: 0
     MaxValue: 100
     Description: Threshold (%) for Error Rate alarm (client+server errors / invocations)
+  AlarmTokensPerInvoke:
+    Type: Number
+    Default: 1500
+    MinValue: 1
+    MaxValue: 100000
+    Description: Threshold for average (Input+Output) tokens per invocation
 
 Conditions:
   CreateTopic: !Equals [ !Ref CreateSNSTopic, "true" ]
@@ -117,10 +123,10 @@ Resources:
   TokenPerInvokeHighA:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub "Bedrock-TokensPerInvoke-High-${ModelIdA}"
+      AlarmName: !Sub "Bedrock-TokensPerInvoke-gt${AlarmTokensPerInvoke}-${ModelIdA}"
       AlarmDescription: "Average (Input+Output tokens)/Invocations > threshold"
       ComparisonOperator: GreaterThanThreshold
-      Threshold: 1500
+      Threshold: !Ref AlarmTokensPerInvoke   # <- changed
       EvaluationPeriods: 5
       TreatMissingData: notBreaching
       Metrics:
@@ -244,10 +250,10 @@ Resources:
   TokenPerInvokeHighB:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub "Bedrock-TokensPerInvoke-High-${ModelIdB}"
+      AlarmName: !Sub "Bedrock-TokensPerInvoke-gt${AlarmTokensPerInvoke}-${ModelIdB}"
       AlarmDescription: "Average (Input+Output tokens)/Invocations > threshold"
       ComparisonOperator: GreaterThanThreshold
-      Threshold: 1500
+      Threshold: !Ref AlarmTokensPerInvoke   # <- changed
       EvaluationPeriods: 5
       TreatMissingData: notBreaching
       Metrics:
